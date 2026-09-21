@@ -7,7 +7,11 @@ import {
   type AnyAgentTool,
   type NormalizedUsage,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { calculateCost, type AssistantMessage, type ToolResultMessage } from "openclaw/plugin-sdk/llm";
+import {
+  calculateCost,
+  type AssistantMessage,
+  type ToolResultMessage,
+} from "openclaw/plugin-sdk/llm";
 import { appendSessionTranscriptMessageByIdentityStrict } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { AgentsApiFunctionCall } from "./agentsapi-client.js";
