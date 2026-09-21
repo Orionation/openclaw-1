@@ -2,8 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
+import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
+import { createPersonalInstructionsTool } from "../../agents/tools/personal-instructions-tool.js";
 import { loadPersonalUserBootstrapFile } from "../../agents/workspace-personal-bootstrap.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { trackAsyncWork } from "../../shared/async-work-scope.js";
+import { createGatewayMethodRegistry } from "../methods/registry.js";
 import type { GatewayClient } from "./client-types.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 import { usersPersonalFileHandlers } from "./users-personal-file.js";
@@ -13,6 +18,7 @@ const state = vi.hoisted(() => ({
   role: "reader",
   remote: false,
   beforeMutation: undefined as (() => void) | undefined,
+  commitGuard: undefined as (() => void) | undefined,
 }));
 vi.mock("../../state/user-profile-list.js", () => ({
   readResidentUserProfileId: (id: string) => (id === "alice-alias" ? state.canonical : id),
@@ -51,6 +57,7 @@ beforeEach(async () => {
   state.role = "reader";
   state.remote = false;
   state.beforeMutation = undefined;
+  state.commitGuard = undefined;
   connected = true;
   controller = new AbortController();
   config = { agents: { defaults: { workspace } } };
@@ -82,6 +89,7 @@ async function rpc(method: "get" | "set", params: Record<string, unknown> = {}) 
     client,
     respond,
     signal: controller.signal,
+    sessionMutationCommitGuard: state.commitGuard,
     isWebchatConnect: () => false,
     context: {
       getRuntimeConfig: () => config,
@@ -98,6 +106,130 @@ const save = (content: string, expectedHash: string | null = null) =>
 const personalPath = () => path.join(workspace, "users", "alice", "USER.md");
 
 describe("personal USER.md self-service", () => {
+  function toolTurn(sessionKey = "agent:main:dashboard:someone-elses-project") {
+    let active = true;
+    const authority = createAdmittedRunOperatorAuthority({
+      profileId: "alice-alias",
+      scopes: ["operator.read"],
+      assertCurrent: () => {
+        if (!active) {
+          throw new Error("requester revoked");
+        }
+      },
+    });
+    client = {
+      ...client,
+      connId: undefined,
+      authenticatedUserProfile: { ...client.authenticatedUserProfile!, profileId: "bob" },
+      internal: { syntheticClient: true, operatorRunAuthority: authority },
+    };
+    const context = {
+      getRuntimeConfig: () => config,
+      trackExecution: trackAsyncWork,
+      logGateway: { error: vi.fn(), warn: vi.fn() },
+      getGatewayMethodRegistry: () =>
+        createGatewayMethodRegistry(
+          Object.entries(usersPersonalFileHandlers).map(([name, handler]) => ({
+            name,
+            handler,
+            scope: "operator.read" as const,
+            owner: { kind: "core" as const, area: "users" },
+          })),
+        ),
+    } as unknown as GatewayRequestHandlerOptions["context"];
+    const identity = {
+      agentId: "main",
+      sessionKey,
+      operationalRunInstance: { instanceId: sessionKey, runId: "personal-test-run" },
+      operatorAuthority: authority,
+      receiptAuthority: () => active,
+      gatewayContextResolver: () => context,
+    };
+    return {
+      identity,
+      revoke: () => {
+        active = false;
+      },
+    };
+  }
+
+  it.each([
+    "agent:main:main",
+    "agent:main:dashboard:foreign-owner",
+    "agent:main:dashboard:worktree",
+  ])(
+    "routes the actual chat tool from %s to the requester file, not the session/client owner",
+    async (sessionKey) => {
+      const { identity } = toolTurn(sessionKey);
+      const tool = createPersonalInstructionsTool("main");
+      const execute = (params: Record<string, unknown>) =>
+        withGatewayToolCallerIdentity(identity, () =>
+          tool.execute("personal-call", params, controller.signal),
+        );
+      expect((await execute({ action: "get" })).details).toMatchObject({
+        profileId: "alice",
+        missing: true,
+        hash: null,
+      });
+      expect(
+        (await execute({ action: "set", content: "Prefer examples.", expectedHash: null })).details,
+      ).toMatchObject({ profileId: "alice", content: "Prefer examples." });
+      expect(await fs.readFile(personalPath(), "utf8")).toBe("Prefer examples.");
+      expect(await fs.readdir(path.join(workspace, "users"))).toEqual(["alice"]);
+      expect(await fs.readFile(path.join(workspace, "USER.md"), "utf8")).toBe("Shared defaults");
+    },
+  );
+
+  it("rejects copied requester authority without its live admitted tool run", async () => {
+    toolTurn();
+    expect((await save("Unadmitted")).ok).toBe(false);
+    const { identity } = toolTurn();
+    expect(
+      (
+        await withGatewayToolCallerIdentity({ ...identity, operatorAuthority: undefined }, () =>
+          save("Wrong source"),
+        )
+      ).ok,
+    ).toBe(false);
+    expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
+  });
+
+  it.each(["source", "run", "commit"])(
+    "rechecks delegated %s authority before filesystem mutation",
+    async (boundary) => {
+      const turn = toolTurn();
+      if (boundary === "commit") {
+        let current = true;
+        state.commitGuard = () => {
+          if (!current) {
+            throw new Error("dispatch revoked");
+          }
+        };
+        state.beforeMutation = () => {
+          current = false;
+        };
+      } else if (boundary === "source") {
+        state.beforeMutation = turn.revoke;
+      } else {
+        let current = true;
+        turn.identity.receiptAuthority = () => current;
+        state.beforeMutation = () => {
+          current = false;
+        };
+      }
+      expect((await withGatewayToolCallerIdentity(turn.identity, () => save("Retired"))).ok).toBe(
+        false,
+      );
+      await expect(fs.readFile(personalPath(), "utf8")).rejects.toThrow();
+    },
+  );
+
+  it("never falls back to the Gateway owner when chat has no authenticated requester", async () => {
+    await expect(
+      createPersonalInstructionsTool("main").execute("anonymous", { action: "get" }),
+    ).rejects.toThrow("authenticated Gateway user turn");
+  });
+
   it("lets a read-only signed-in user create, read, and edit only their canonical file", async () => {
     expect(await rpc("get")).toMatchObject({
       ok: true,

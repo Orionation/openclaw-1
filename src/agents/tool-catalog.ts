@@ -159,6 +159,13 @@ const CORE_TOOL_DEFINITIONS: CoreToolDefinition[] = [
     includeInOpenClawGroup: true,
   },
   {
+    id: "personal_instructions",
+    description: "Edit the requesting user’s personal instructions",
+    sectionId: "memory",
+    profiles: ["coding", "messaging"],
+    includeInOpenClawGroup: true,
+  },
+  {
     id: "sessions",
     description: "Session settings: label, pin, archive, groups",
     sectionId: "sessions",

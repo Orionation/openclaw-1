@@ -63,9 +63,10 @@ export class PersonalInstructions extends OpenClawLightDomElement {
   private syncContext() {
     const snapshot = this.context.gateway.snapshot;
     const connected = snapshot.phase === "connected";
-    // Retain drafts privately while offline; never expose them under a different identity
-    // or Gateway. A reconnect keeps the old hash so concurrent edits still conflict.
-    const profileId = snapshot.selfUser?.id ?? (connected ? null : this.profileId);
+    // Hello can arrive before profile resolution. Keep the draft private until
+    // identity is known, then restore it only for the same person and Gateway.
+    // A reconnect keeps the old hash so concurrent edits still conflict.
+    const profileId = snapshot.selfUser?.id ?? this.profileId;
     const gatewayUrl = this.context.gateway.connection.gatewayUrl;
     const connectionId = snapshot.hello?.server?.connId ?? null;
     const available =

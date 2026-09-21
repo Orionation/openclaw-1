@@ -291,10 +291,18 @@ it("retains drafts privately while offline and restores them only for the same p
   emit({ phase: "offline", selfUser: null });
   await settle(element);
   expect(element.querySelector("textarea")).toBeNull();
+  emit({ phase: "connected", selfUser: null });
+  await settle(element);
+  expect(element.querySelector("textarea")).toBeNull();
+  expect(request).toHaveBeenCalledTimes(1);
   emit({ phase: "connected", selfUser: { id: "profile-1" } });
   await settle(element);
   expect(element.querySelector("textarea")?.value).toBe("Keep my unsaved instructions");
   expect(request).toHaveBeenCalledTimes(1);
+  emit({ phase: "offline", selfUser: null });
+  emit({ phase: "connected", selfUser: null });
+  await settle(element);
+  expect(element.querySelector("textarea")).toBeNull();
   const otherRequest = vi
     .fn()
     .mockResolvedValue({ ...file, profileId: "profile-2", content: "Other person" });

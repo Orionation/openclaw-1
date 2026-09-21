@@ -99,6 +99,7 @@ describe("tool-catalog", () => {
       "x_search",
       "memory_search",
       "memory_get",
+      "personal_instructions",
       "sessions",
       "sessions_list",
       "sessions_history",
@@ -142,6 +143,7 @@ describe("tool-catalog", () => {
     expect(requirePolicyAllow("coding").at(-1)).toBe("bundle-mcp");
     expect(requirePolicyAllow("messaging")).toEqual([
       "secrets",
+      "personal_instructions",
       "sessions",
       "sessions_list",
       "sessions_history",

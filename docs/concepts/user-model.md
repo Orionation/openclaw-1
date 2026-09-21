@@ -21,6 +21,16 @@ authenticated profile and `operator.read`; administrator or general write access
 is not required. The editor always uses the signed-in person, not the owner of
 the currently open chat. It cannot edit another person’s file or shared defaults.
 
+You can also ask an agent in any authenticated Gateway chat session to update
+your personal instructions, including sessions backed by a project worktree or
+owned by someone else. The `personal_instructions` tool reads or updates the
+**requesting person’s** file in the selected agent’s configured workspace; the
+session owner, task directory, and model-supplied profile IDs never choose the
+write target. It reads the current file before saving with its content hash.
+Anonymous or autonomous runs without a live authenticated requester cannot use
+this exception. Normal tool policies still apply; general filesystem access is
+unchanged.
+
 Saves check the version you loaded. If another editor changes the file, keep a
 copy of your draft and reload before saving again. As with the shared workspace
 editor, conflict detection against independent host-side editors is best effort;

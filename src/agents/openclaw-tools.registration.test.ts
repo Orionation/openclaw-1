@@ -109,6 +109,29 @@ describe("openclaw-tools progress_card gating", () => {
     ).toEqual([]);
   });
 
+  it("exposes personal instructions in hosted worktree sessions without general filesystem access", () => {
+    const tools = createOpenClawCodingTools({
+      sessionKey: "agent:main:dashboard:project",
+      runSessionKey: "agent:main:dashboard:project",
+      cwd: "/project/worktree",
+      workspaceDir: "/project/worktree",
+      config: {
+        agents: { entries: { main: { default: true, workspace: "/agent/workspace" } } },
+        tools: { allow: ["personal_instructions"], fs: { workspaceOnly: true } },
+      },
+      disableMessageTool: true,
+      wrapBeforeToolCallHook: false,
+    });
+    expect(toolNames(tools)).toContain("personal_instructions");
+    expect(toolNames(tools)).not.toContain("write");
+    expect(toolNames(tools)).not.toContain("exec");
+    expect(resolveCoreToolFactoryFamily("personal_instructions")).toBe("openclaw");
+    setEmbeddedMode(true);
+    expect(createFastToolNames({ agentSessionKey: "agent:main:main" })).not.toContain(
+      "personal_instructions",
+    );
+  });
+
   it("enables progress_card by default", () => {
     expectProgressCardEnabled({ config: {} as OpenClawConfig }, true);
   });

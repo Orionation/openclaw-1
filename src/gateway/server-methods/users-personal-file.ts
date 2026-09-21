@@ -7,7 +7,12 @@ import {
   type UsersPersonalFileGetResult,
   type UsersPersonalFileSetParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { assertAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { listAgentIds, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import {
+  captureGatewayToolCallerAssertion,
+  getGatewayToolCallerIdentity,
+} from "../../agents/tools/gateway-caller-context.js";
 import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import { MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES } from "../../agents/workspace-bootstrap-read.js";
 import { isMissingPathError } from "../../infra/errors.js";
@@ -35,22 +40,51 @@ function preparePersonalFile(options: GatewayRequestHandlerOptions, requestedAge
   }
   const agentId = requestedAgentId;
   const workspaceDir = resolveAgentWorkspaceDir(context.getRuntimeConfig(), agentId);
+  const operatorAuthority = client?.internal?.operatorRunAuthority;
+  const toolCaller = getGatewayToolCallerIdentity();
+  const assertToolCurrent = captureGatewayToolCallerAssertion();
   const currentProfile = () => {
+    options.sessionMutationCommitGuard?.();
     if (
-      !client?.connId ||
+      !client ||
       client.invalidated ||
       client.connectionSignal?.aborted ||
       client.connect.role !== "operator" ||
-      isIneligiblePersonalGatewayCaller(client) ||
-      isGatewayClientProfilePending(client) ||
-      options.signal?.aborted ||
-      !context.getClientConnIds?.((current) => current === client).has(client.connId)
+      options.signal?.aborted
     ) {
       throw new PersonalFileAccessError(
         "Personal instructions require a current signed-in connection.",
       );
     }
-    const id = client.authenticatedUserProfile?.profileId;
+    let id: string | undefined;
+    if (operatorAuthority) {
+      // This is the original requesting person, not the session owner or a profile
+      // copied onto a synthetic client. Only an exact live, host-admitted tool run
+      // may use this narrow self-service exception. Other personal APIs stay unchanged.
+      assertAdmittedRunOperatorAuthority(operatorAuthority);
+      if (
+        client.internal?.syntheticClient !== true ||
+        toolCaller?.operatorAuthority !== operatorAuthority ||
+        !assertToolCurrent
+      ) {
+        throw new PersonalFileAccessError("Personal instructions require an admitted user turn.");
+      }
+      assertToolCurrent();
+      operatorAuthority.assertCurrent();
+      id = operatorAuthority.profileId;
+    } else {
+      if (
+        isIneligiblePersonalGatewayCaller(client) ||
+        isGatewayClientProfilePending(client) ||
+        !client.connId ||
+        !context.getClientConnIds?.((current) => current === client).has(client.connId)
+      ) {
+        throw new PersonalFileAccessError(
+          "Personal instructions require a current signed-in connection.",
+        );
+      }
+      id = client.authenticatedUserProfile?.profileId;
+    }
     // Gateway projection owns this resident catalog; never create identities from request input.
     const canonicalId = id ? readResidentUserProfileId(id) : undefined;
     if (!canonicalId || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(canonicalId)) {
@@ -65,7 +99,11 @@ function preparePersonalFile(options: GatewayRequestHandlerOptions, requestedAge
       cfg,
     );
     if (
-      ![client.connect.scopes ?? [], ...(policy ? [policy.scopes] : [])].every((allowedScopes) =>
+      ![
+        client.connect.scopes ?? [],
+        ...(operatorAuthority ? [operatorAuthority.scopes] : []),
+        ...(policy ? [policy.scopes] : []),
+      ].every((allowedScopes) =>
         roleScopesAllow({ role: "operator", requestedScopes: ["operator.read"], allowedScopes }),
       )
     ) {
