@@ -4,7 +4,19 @@ import { resolveGlobalSet } from "../shared/global-singleton.js";
 import { notifyListeners, registerListener } from "../shared/listeners.js";
 
 export type SessionRowChange =
-  | { sessionKey: string; agentId?: string; storePath?: string; scope?: "automation" }
+  | {
+      sessionKey: string;
+      agentId?: string;
+      storePath?: string;
+      scope?: "automation";
+      /** Committed Incognito identity facts; observers never need a database scan. */
+      incognitoEntry?: {
+        sessionId: string;
+        createdAt?: number;
+        /** Exact process-held connection identity and liveness, never a database read. */
+        source: Pick<DatabaseSync, "isOpen">;
+      };
+    }
   | { all: true; scope: string | { agentId?: string; storePath?: string } };
 
 const listeners = resolveGlobalSet<(change: SessionRowChange) => void>(

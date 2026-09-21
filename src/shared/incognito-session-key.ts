@@ -1,3 +1,5 @@
+export const INCOGNITO_SESSION_LIFETIME_MS = 24 * 60 * 60_000;
+
 const INCOGNITO_SESSION_RE =
   /^agent:[^:]+:(?:dashboard|subagent|internal-session-effects):incognito-[^:]+$/u;
 

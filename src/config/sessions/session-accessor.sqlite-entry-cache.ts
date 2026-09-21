@@ -9,6 +9,7 @@ import {
 } from "../../infra/kysely-sync.js";
 import { readSqliteDataVersion } from "../../infra/node-sqlite.js";
 import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
+import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { readOpenClawAgentDatabase } from "../../state/openclaw-agent-db-readonly-open.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
@@ -489,7 +490,20 @@ export function publishSessionEntryCacheInvalidation(
     publishTrackedCacheUpdate(database, () => sessionEntryCaches.delete(database.db));
   }
   sessionChanges.emit(
-    { agentId: database.agentId, storePath: database.path, sessionKey: update.sessionKey },
+    {
+      agentId: database.agentId,
+      storePath: database.path,
+      sessionKey: update.sessionKey,
+      ...(update.entry && isIncognitoSessionKey(update.sessionKey)
+        ? {
+            incognitoEntry: {
+              sessionId: update.entry.sessionId,
+              createdAt: update.entry.createdAt,
+              source: database.db,
+            },
+          }
+        : {}),
+    },
     database.db,
   );
 }
