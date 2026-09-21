@@ -3,10 +3,14 @@ import type { Turn } from "openai/resources/beta/agents/sessions/turns";
 import {
   normalizeUsage,
   type AgentHarnessAttemptParamsV2,
+  type AgentMessage,
+  type AnyAgentTool,
   type NormalizedUsage,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { calculateCost, type AssistantMessage } from "openclaw/plugin-sdk/llm";
+import { calculateCost, type AssistantMessage, type ToolResultMessage } from "openclaw/plugin-sdk/llm";
 import { appendSessionTranscriptMessageByIdentityStrict } from "openclaw/plugin-sdk/session-transcript-runtime";
+import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import type { AgentsApiFunctionCall } from "./agentsapi-client.js";
 
 type AgentEvent = Parameters<NonNullable<AgentHarnessAttemptParamsV2["onAgentEvent"]>>[0];
 type AgentsApiReply = {
@@ -158,19 +162,6 @@ async function commitAgentsApiReply(
   emitFinalReply: (turnId: string, text: string) => void | Promise<void>,
 ): Promise<void> {
   assertCurrent();
-  const { agentId, sessionId, sessionKey, storePath } = params.sessionTarget ?? {};
-  if (
-    !agentId ||
-    !sessionId ||
-    !sessionKey ||
-    !storePath ||
-    sessionId !== params.sessionId ||
-    agentId !== params.agentId ||
-    sessionKey !== params.sessionKey
-  ) {
-    throw new Error("Agents API requires a matching host-prepared session target");
-  }
-  const sessionTarget = { ...params.sessionTarget, agentId, sessionId, sessionKey, storePath };
   const completedMessages = items
     .filter((item) => item.type === "message")
     .filter((item) => item.role === "assistant" && item.status === "completed");
@@ -200,23 +191,7 @@ async function commitAgentsApiReply(
       timestamp: Date.now(),
       idempotencyKey: `agentsapi:${remoteSessionId}:${turn.id}`,
     };
-    assertCurrent();
-    const append = await appendSessionTranscriptMessageByIdentityStrict({
-      ...sessionTarget,
-      config: params.config,
-      message: assistant,
-      prepareMessageAfterIdempotencyCheck: (message) => {
-        assertCurrent();
-        return message;
-      },
-    });
-    if (append.kind === "result") {
-      reply.lastAssistant = append.result.message;
-    }
-    assertCurrent();
-    if (append.kind !== "result") {
-      throw new Error("Agents API assistant transcript append was refused");
-    }
+    reply.lastAssistant = await appendAgentsApiTranscriptMessage(params, assistant, assertCurrent);
     await params.onAssistantMessageStart?.();
   }
   assertCurrent();
@@ -226,6 +201,85 @@ async function commitAgentsApiReply(
     await params.onPartialReply?.({ text });
     assertCurrent();
   }
+}
+
+/** Persist host tool evidence before its result is acknowledged by the native session. */
+export async function recordAgentsApiToolTranscript(
+  params: AgentHarnessAttemptParamsV2,
+  call: AgentsApiFunctionCall,
+  result: Awaited<ReturnType<AnyAgentTool["execute"]>>,
+  isError: boolean,
+  assertCurrent: () => void,
+): Promise<void> {
+  const identity = `agentsapi:tool:${call.turn_id}:${call.call_id}`;
+  const toolCall: AssistantMessage & { idempotencyKey: string } = {
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: call.call_id,
+        name: call.name,
+        arguments: asOptionalRecord(call.arguments) ?? {},
+      },
+    ],
+    api: "openai-responses",
+    provider: "openai",
+    model: params.model.id,
+    usage: emptyUsage(),
+    stopReason: "toolUse",
+    timestamp: Date.now(),
+    idempotencyKey: `${identity}:call`,
+  };
+  const toolResult: ToolResultMessage & { idempotencyKey: string } = {
+    role: "toolResult",
+    toolCallId: call.call_id,
+    toolName: call.name,
+    content: result.content,
+    details: result.details,
+    isError,
+    timestamp: Date.now(),
+    idempotencyKey: `${identity}:result`,
+  };
+  await appendAgentsApiTranscriptMessage(params, toolCall, assertCurrent);
+  await appendAgentsApiTranscriptMessage(params, toolResult, assertCurrent);
+}
+
+async function appendAgentsApiTranscriptMessage<TMessage extends AgentMessage>(
+  params: AgentHarnessAttemptParamsV2,
+  message: TMessage,
+  assertCurrent: () => void,
+): Promise<TMessage> {
+  assertCurrent();
+  const { agentId, sessionId, sessionKey, storePath } = params.sessionTarget ?? {};
+  if (
+    !agentId ||
+    !sessionId ||
+    !sessionKey ||
+    !storePath ||
+    sessionId !== params.sessionId ||
+    agentId !== params.agentId ||
+    sessionKey !== params.sessionKey
+  ) {
+    throw new Error("Agents API requires a matching host-prepared session target");
+  }
+  const append = await appendSessionTranscriptMessageByIdentityStrict({
+    ...params.sessionTarget,
+    agentId,
+    sessionId,
+    sessionKey,
+    storePath,
+    config: params.config,
+    message,
+    prepareMessageAfterIdempotencyCheck: (prepared) => {
+      assertCurrent();
+      return prepared;
+    },
+  });
+  assertCurrent();
+  if (append.kind !== "result") {
+    throw new Error("Agents API transcript append was refused");
+  }
+  return append.result.message;
 }
 
 function emptyUsage(): AssistantMessage["usage"] {
