@@ -1,0 +1,256 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { loadPersonalUserBootstrapFile } from "../../agents/workspace-personal-bootstrap.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { GatewayClient } from "./client-types.js";
+import type { GatewayRequestHandlerOptions } from "./types.js";
+import { usersPersonalFileHandlers } from "./users-personal-file.js";
+
+const state = vi.hoisted(() => ({
+  canonical: "alice",
+  role: "reader",
+  remote: false,
+  beforeMutation: undefined as (() => void) | undefined,
+}));
+vi.mock("../../state/user-profile-list.js", () => ({
+  readResidentUserProfileId: (id: string) => (id === "alice-alias" ? state.canonical : id),
+  readUserProfileIdentity: (id: string) => ({ profileId: id, role: state.role }),
+}));
+vi.mock("../../agents/workspace-access.js", () => ({
+  getAgentWorkspaceAccess: () => (state.remote ? {} : undefined),
+}));
+vi.mock("../../infra/fs-safe.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../infra/fs-safe.js")>();
+  return {
+    ...original,
+    root: async (...args: Parameters<typeof original.root>) => {
+      const [dir, defaults] = args;
+      return original.root(dir, {
+        ...defaults,
+        assertBeforeMutation: () => {
+          state.beforeMutation?.();
+          defaults?.assertBeforeMutation?.();
+        },
+      });
+    },
+  };
+});
+
+const dirs = useAutoCleanupTempDirTracker(afterEach);
+let workspace: string;
+let client: GatewayClient;
+let connected: boolean;
+let config: OpenClawConfig;
+let controller: AbortController;
+
+beforeEach(async () => {
+  workspace = await fs.realpath(dirs.make("personal-file-"));
+  state.canonical = "alice";
+  state.role = "reader";
+  state.remote = false;
+  state.beforeMutation = undefined;
+  connected = true;
+  controller = new AbortController();
+  config = { agents: { defaults: { workspace } } };
+  client = {
+    connId: "alice-connection",
+    connect: {
+      minProtocol: 1,
+      maxProtocol: 1,
+      client: { id: "openclaw-control-ui", version: "test", platform: "test", mode: "webchat" },
+      role: "operator",
+      scopes: ["operator.read"],
+    },
+    authenticatedUserProfile: {
+      profileId: "alice-alias",
+      displayName: null,
+      hasAvatar: false,
+      updatedAt: 0,
+    },
+  };
+  await fs.writeFile(path.join(workspace, "USER.md"), "Shared defaults");
+});
+
+async function rpc(method: "get" | "set", params: Record<string, unknown> = {}) {
+  const respond = vi.fn();
+  const name = `users.personalFile.${method}`;
+  await usersPersonalFileHandlers[name]!({
+    req: { type: "req", id: "1", method: name },
+    params: { agentId: "main", ...params },
+    client,
+    respond,
+    signal: controller.signal,
+    isWebchatConnect: () => false,
+    context: {
+      getRuntimeConfig: () => config,
+      getClientConnIds: (predicate: (candidate: GatewayClient) => boolean) =>
+        new Set(connected && predicate(client) ? [client.connId] : []),
+    } as unknown as GatewayRequestHandlerOptions["context"],
+  });
+  expect(respond).toHaveBeenCalledTimes(1);
+  const [ok, result, error] = respond.mock.calls[0]!;
+  return { ok, result, error };
+}
+const save = (content: string, expectedHash: string | null = null) =>
+  rpc("set", { content, expectedHash });
+const personalPath = () => path.join(workspace, "users", "alice", "USER.md");
+
+describe("personal USER.md self-service", () => {
+  it("lets a read-only signed-in user create, read, and edit only their canonical file", async () => {
+    expect(await rpc("get")).toMatchObject({
+      ok: true,
+      result: { missing: true, hash: null, content: "", profileId: "alice" },
+    });
+    const created = await save("Prefer concise replies.");
+    expect(created).toMatchObject({ ok: true, result: { profileId: "alice", missing: false } });
+    expect(await fs.readFile(personalPath(), "utf8")).toBe("Prefer concise replies.");
+    expect(await rpc("get")).toMatchObject({ ok: true, result: created.result });
+    expect(await save("Prefer examples.", created.result.hash)).toMatchObject({ ok: true });
+    expect(await fs.readFile(personalPath(), "utf8")).toBe("Prefer examples.");
+    expect(await fs.readFile(path.join(workspace, "USER.md"), "utf8")).toBe("Shared defaults");
+    expect(await fs.readdir(path.join(workspace, "users"))).toEqual(["alice"]);
+    expect(await loadPersonalUserBootstrapFile(workspace, "alice")).toMatchObject({
+      personalUser: true,
+      content: "Prefer examples.",
+      path: personalPath(),
+    });
+  });
+
+  it("requires a hash for every save and detects concurrent creation and stale edits", async () => {
+    expect(await rpc("set", { content: "unsafe" })).toMatchObject({ ok: false });
+    const attempts = await Promise.all([save("First"), save("Second")]);
+    expect(attempts.map((attempt) => attempt.ok)).toEqual(expect.arrayContaining([false, true]));
+    const created = attempts.find((x) => x.ok)!;
+    const updated = await save("Updated", created.result.hash);
+    expect(updated.ok).toBe(true);
+    expect(await save("Stale", created.result.hash)).toMatchObject({
+      ok: false,
+      error: { details: { type: "personal_file_conflict" } },
+    });
+    expect(await fs.readFile(personalPath(), "utf8")).toBe("Updated");
+    expect(await save("", updated.result.hash)).toMatchObject({
+      ok: true,
+      result: { content: "", missing: false },
+    });
+  });
+
+  it.each([{ profileId: "bob" }, { path: "USER.md" }, { name: "../USER.md" }])(
+    "rejects caller-selected targets %j even for administrators",
+    async (extra) => {
+      client.connect.scopes = ["operator.admin"];
+      for (const method of ["get", "set"] as const) {
+        expect(
+          await rpc(method, {
+            ...(method === "set" ? { content: "Bad", expectedHash: null } : {}),
+            ...extra,
+          }),
+        ).toMatchObject({ ok: false });
+      }
+      expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
+    },
+  );
+
+  it.each(["anonymous", "synthetic", "node", "disconnected", "no-scope", "cancelled"])(
+    "rejects %s callers",
+    async (kind) => {
+      if (kind === "anonymous") {
+        client.authenticatedUserProfile = undefined;
+      }
+      if (kind === "synthetic") {
+        client.internal = { syntheticClient: true };
+      }
+      if (kind === "node") {
+        client.connect.role = "node";
+      }
+      if (kind === "disconnected") {
+        connected = false;
+      }
+      if (kind === "no-scope") {
+        client.connect.scopes = [];
+      }
+      if (kind === "cancelled") {
+        controller.abort();
+      }
+      expect(await save("Bad")).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+      expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
+    },
+  );
+
+  it.each([
+    "profile-merge",
+    "disconnect",
+    "scope-revocation",
+    "transport-revocation",
+    "role-revocation",
+    "workspace-change",
+    "cancellation",
+  ])("rechecks %s inside the safe writer before mutation", async (kind) => {
+    config.gateway = {
+      roles: {
+        definitions: {
+          reader: { scopes: ["operator.read"], agents: ["main"], sessions: { others: "none" } },
+          denied: { scopes: [], agents: [], sessions: { others: "none" } },
+        },
+      },
+    };
+    state.beforeMutation = () => {
+      if (kind === "role-revocation") {
+        state.role = "denied";
+      }
+      if (kind === "profile-merge") {
+        state.canonical = "bob";
+      }
+      if (kind === "disconnect") {
+        connected = false;
+      }
+      if (kind === "transport-revocation") {
+        client.invalidated = true;
+      }
+      if (kind === "scope-revocation") {
+        client.connect.scopes = [];
+      }
+      if (kind === "workspace-change") {
+        config = { agents: { defaults: { workspace: workspace + "-moved" } } };
+      }
+      if (kind === "cancellation") {
+        controller.abort();
+      }
+    };
+    expect((await save("Bad")).ok).toBe(false);
+    expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
+  });
+
+  it.each(["parent-symlink", "file-symlink", "hardlink"])(
+    "rejects %s aliases for reads and writes",
+    async (kind) => {
+      await fs.mkdir(path.join(workspace, "users", "bob"), { recursive: true });
+      const other = path.join(workspace, "users", "bob", "USER.md");
+      await fs.writeFile(other, "Bob's instructions");
+      if (kind === "parent-symlink") {
+        await fs.symlink("bob", path.join(workspace, "users", "alice"), "dir");
+      } else {
+        await fs.mkdir(path.dirname(personalPath()));
+        if (kind === "file-symlink") {
+          await fs.symlink(other, personalPath());
+        } else {
+          await fs.link(other, personalPath());
+        }
+      }
+      expect((await rpc("get")).ok).toBe(false);
+      expect((await save("Bad")).ok).toBe(false);
+      expect(await fs.readFile(other, "utf8")).toBe("Bob's instructions");
+    },
+  );
+
+  it("rejects invalid agent IDs, remote workspaces, and content outside the bootstrap cap", async () => {
+    expect((await rpc("get", { agentId: "../main" })).ok).toBe(false);
+    expect((await rpc("get", { agentId: "unknown" })).ok).toBe(false);
+    expect((await save("a".repeat(4001))).ok).toBe(false);
+    expect((await save("😀".repeat(2001))).ok).toBe(false);
+    state.remote = true;
+    expect((await save("Bad")).ok).toBe(false);
+    expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
+  });
+});

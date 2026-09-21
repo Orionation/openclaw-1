@@ -17,6 +17,7 @@ export const COMMUNICATION_SETTINGS_TARGET_IDS = {
 
 export const PROFILE_SETTINGS_TARGET_IDS = {
   identity: "settings-profile-identity",
+  personalInstructions: "settings-profile-personal-instructions",
   githubConnections: "settings-profile-github-connections",
 } as const;
 
@@ -210,6 +211,14 @@ export const SETTINGS_SEARCH_TARGETS = {
       "profilePage.identity.linkedEmails",
     ],
     aliases: "profile avatar image email",
+    requiresIdentity: true,
+  },
+  personalInstructions: {
+    routeId: "profile",
+    labelKey: "profilePage.personalInstructions.title",
+    hash: `#${PROFILE_SETTINGS_TARGET_IDS.personalInstructions}`,
+    searchKeys: ["profilePage.personalInstructions.description"],
+    aliases: "USER.md personal instructions preferences",
     requiresIdentity: true,
   },
   githubConnections: {

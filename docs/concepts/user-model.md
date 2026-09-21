@@ -15,9 +15,24 @@ OpenClaw loads `USER.md` beside `MEMORY.md` at session start. It has a separate 
 
 ## Personal USER files on a shared Gateway
 
-Keep workspace-root `USER.md` for shared defaults. To add preferences for one
-signed-in person, create `users/<canonical-profile-id>/USER.md` in the **agent
-workspace**, not the task's Git worktree. Obtain the durable profile ID from the
+Open **Settings → Profile → Personal instructions**, select an agent, and save
+your preferences. You can create or edit your own personal `USER.md` with an
+authenticated profile and `operator.read`; administrator or general write access
+is not required. The editor always uses the signed-in person, not the owner of
+the currently open chat. It cannot edit another person’s file or shared defaults.
+
+Saves check the version you loaded. If another editor changes the file, keep a
+copy of your draft and reload before saving again. As with the shared workspace
+editor, conflict detection against independent host-side editors is best effort;
+avoid simultaneous UI and host-process edits to the same file. Personal instructions must fit
+the 4,000-character bootstrap budget; lower configured budgets and existing
+provenance checks still apply. Do not store secrets. The editor supports local
+agent workspaces; remotely hosted agent workspaces report an explicit error
+rather than writing a different Gateway-local file.
+
+Keep workspace-root `USER.md` for shared defaults. Personal preferences live at
+`users/<canonical-profile-id>/USER.md` in the **agent workspace**, not the task’s
+Git worktree. For manual host-side editing, obtain the durable profile ID from the
 Gateway's authenticated profile/People data; do not use a display name, GitHub
 login, email, or a profile ID pasted into a message. This uses existing session
 ownership and creation records; no schema or configuration change is needed.
