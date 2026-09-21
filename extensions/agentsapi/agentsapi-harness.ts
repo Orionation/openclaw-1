@@ -39,6 +39,7 @@ import { createAgentsApiBindings } from "./agentsapi-bindings.js";
 import { AgentsApiClient } from "./agentsapi-client.js";
 import { createAgentsApiMessageProjection } from "./agentsapi-messages.js";
 import { createAgentsApiSession } from "./agentsapi-session.js";
+import { buildAgentsApiToolSurface } from "./agentsapi-tools.js";
 
 /** Agents API owns native protocol; the host harness runtime owns coordination. */
 export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
@@ -215,6 +216,10 @@ async function runAgentsApiSession(
   let projection: ReturnType<typeof createAgentsApiMessageProjection> | undefined;
   let usageRecorded = false;
   let terminalTurnId: string | undefined;
+  const toolCleanups: Array<(reason: string) => Promise<void>> = [];
+  let toolSurface: ReturnType<typeof buildAgentsApiToolSurface> | undefined;
+  let startedToolCount = 0;
+  let completedToolCount = 0;
   const handle = {
     kind: "embedded",
     toolAuthorityFingerprint: params.toolAuthorityFingerprint,
@@ -255,12 +260,16 @@ async function runAgentsApiSession(
       params.agentId,
     );
     assertCurrent();
+    const surface = buildAgentsApiToolSurface(params, controller.signal, assertCurrent, (cleanup) =>
+      toolCleanups.push(cleanup),
+    );
+    toolSurface = surface;
     const fingerprint = createHash("sha256")
-      .update(JSON.stringify([params.model.id, params.resolvedApiKey]))
+      .update(JSON.stringify([params.model.id, params.resolvedApiKey, surface.declarations]))
       .digest("hex");
     if (binding && binding.authFingerprint !== fingerprint) {
       throw new Error(
-        "Agents API model or credential changed; reset the OpenClaw session before continuing",
+        "Agents API model, credential, or tool surface changed; reset the OpenClaw session before continuing",
       );
     }
     const client = new AgentsApiClient(params.resolvedApiKey!, assertOwnerCurrent);
@@ -270,13 +279,15 @@ async function runAgentsApiSession(
         controller.signal,
         [
           "You are the OpenClaw assistant. Use your hosted Linux workspace for commands and files.",
-          "This MVP has no apps, connectors, OpenClaw tools, file transfers, or image generation. Do not claim access to them.",
+          "OpenClaw functions run in the Gateway and use its workspace; your hosted VM owns shell commands and VM files.",
+          "Apps, connectors, file transfers, and image generation are unavailable.",
           params.extraSystemPrompt,
         ]
           .filter(Boolean)
           .join("\n\n"),
         params.model.id,
         reasoningEffort,
+        { functions: surface.declarations },
       );
       assertCurrent();
       await bind({ sessionId: remoteSessionId, authFingerprint: fingerprint });
@@ -299,6 +310,26 @@ async function runAgentsApiSession(
       onSettled: () => deadlines.beginSettlement(Date.now()),
       onUsageError: (error) =>
         embeddedAgentLog.warn("Agents API token accounting unavailable", { error }),
+      executeFunction: async (call) => {
+        startedToolCount++;
+        void emitEvent({
+          stream: "tool",
+          data: { phase: "start", name: call.name, toolCallId: call.call_id },
+        });
+        return surface.execute(call);
+      },
+      onFunctionResult: (call, result) => {
+        completedToolCount++;
+        void emitEvent({
+          stream: "tool",
+          data: {
+            phase: "result",
+            name: call.name,
+            toolCallId: call.call_id,
+            isError: !result.success,
+          },
+        });
+      },
       onEvent: (event) => {
         messageProjection.observe(event);
         params.onRunProgress?.({
@@ -326,7 +357,7 @@ async function runAgentsApiSession(
     params.hostCapabilities.reportOutputTokens?.(reply.usage?.output ?? 0);
     if (result.cancelled) {
       terminal = { kind: "aborted", source: "runtime" };
-    } else {
+    } else if (!result.terminatedByTool) {
       const items = await client.items(remoteSessionId, result.turn.id, controller.signal);
       assertCurrent();
       await projection.commit(params, result.turn, items, assertCurrent);
@@ -363,6 +394,13 @@ async function runAgentsApiSession(
     deadlines.dispose();
     cancellation.dispose();
     controller.abort();
+    for (const cleanup of toolCleanups.toReversed()) {
+      try {
+        await cleanup("Agents API attempt settled");
+      } catch (error) {
+        embeddedAgentLog.warn("Agents API tool cleanup failed", { error });
+      }
+    }
     clearActiveEmbeddedRun(params.sessionId, handle, params.sessionKey, params.sessionFile);
     lifecycle.emitLifecycleTerminal({ phase: terminal.kind === "failed" ? "error" : "end" });
   }
@@ -385,18 +423,25 @@ async function runAgentsApiSession(
       reply?.lastAssistant && terminalTurnId
         ? `agentsapi:${remoteSessionId}:${terminalTurnId}`
         : undefined,
-    toolMetas: [],
+    toolMetas: toolSurface?.toolMetas ?? [],
+    lastToolError: toolSurface?.lastToolError,
+    ...toolSurface?.runtimeFacts,
     didSendViaMessagingTool: false,
     messagingToolSentTexts: [],
     messagingToolSentMediaUrls: [],
     messagingToolSentTargets: [],
+    ...toolSurface?.delivery,
     cloudCodeAssistFormatError: false,
     attemptUsage: reply?.usage,
     replayMetadata: {
       hadPotentialSideEffects: native?.wasSubmitted() ?? false,
       replaySafe: !native?.wasSubmitted(),
     },
-    itemLifecycle: { startedCount: 0, completedCount: 0, activeCount: 0 },
+    itemLifecycle: {
+      startedCount: startedToolCount,
+      completedCount: completedToolCount,
+      activeCount: Math.max(0, startedToolCount - completedToolCount),
+    },
   };
   assertHarnessCurrent();
   const contextWindow = {

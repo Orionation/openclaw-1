@@ -127,11 +127,17 @@ turns and input receipts before accepting completion. It does not resubmit the
 user's message. Native token usage is best effort; unavailable usage currently
 appears as zero in OpenClaw's usage totals.
 
-This MVP supports text and native hosted-workspace commands. Apps, connectors,
-OpenClaw dynamic tools, file transfer, image generation, custom context engines,
-and self-hosted executors are outside its scope. Admitted turns are marked
-unsafe for replay because hosted commands may already have run. OpenClaw can
-continue the existing session after a transient provider failure.
+The harness supports text, native hosted-workspace commands, and host-authorized
+OpenClaw and plugin functions. Gateway functions retain the normal tool policy,
+hooks, current-run authority, and delivery receipts; shell and file operations
+remain in the hosted VM. Tools such as memory search are available when their
+existing plugin and configuration enable them.
+
+Apps, connectors, file transfer, image generation, custom context engines, and
+self-hosted executors are outside this prototype's scope. Admitted turns are
+marked unsafe for replay because hosted commands or Gateway functions may already
+have run. OpenClaw can continue the existing session after a transient provider
+failure.
 
 ## Native Codex app-server auth
 

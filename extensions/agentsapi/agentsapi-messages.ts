@@ -131,7 +131,7 @@ export function createAgentsApiMessageProjection(
     complete,
     commit(
       params: AgentHarnessAttemptParamsV2,
-      turn: Turn,
+      turn: Pick<Turn, "id">,
       items: AgentSessionItem[],
       assertCurrent: () => void,
     ): Promise<void> {
@@ -151,7 +151,7 @@ export function createAgentsApiMessageProjection(
 async function commitAgentsApiReply(
   params: AgentHarnessAttemptParamsV2,
   remoteSessionId: string,
-  turn: Turn,
+  turn: Pick<Turn, "id">,
   items: AgentSessionItem[],
   assertCurrent: () => void,
   reply: AgentsApiReply,
