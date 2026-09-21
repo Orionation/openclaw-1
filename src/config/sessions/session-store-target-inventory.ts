@@ -14,6 +14,8 @@ import { resolveSqliteAgentId } from "./session-accessor.sqlite-scope.js";
 import {
   listSqliteTargetCandidatePathsForSessionStorePath,
   resolveUnsuffixedSqliteTargetFromSessionStorePath,
+} from "./session-sqlite-target-paths.js";
+import {
   resolveSqliteTargetFromSessionStorePath,
   SessionStoreRegistryReadRequired,
   type SessionStoreRegistryRead,
