@@ -12,6 +12,7 @@ import { resolvePreferredServerChatModelValue } from "../../lib/chat/model-ref.t
 import { resolveChatModelOverrideValue } from "../../lib/chat/model-select-state.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { isSessionRuntimePinned } from "../../lib/model-runtime-choice.ts";
+import { readSessionMethodScopeAccess } from "../../lib/session-method-access.ts";
 import {
   DEFAULT_SESSION_LIST_QUERY,
   scopedAgentParamsForSession,
@@ -193,14 +194,23 @@ async function applyChatSetting(
   setting: string,
   synchronize?: () => void,
 ): Promise<boolean> {
+  const canDispatch = () =>
+    captured.isCurrent() &&
+    readSessionMethodScopeAccess(host.hello?.auth, {
+      method: "sessions.patch",
+      params: { key: sessionKey, ...patch },
+      sessionScope: true,
+      session: captured.row(),
+    }).allowed;
   setChatError(host, null, true);
   try {
-    if (!captured.isCurrent()) {
+    if (!canDispatch()) {
       return false;
     }
     const pending = patchChatSessionSettings(host, sessionKey, patch, {
       ...captured.agentParams,
       expectedSessionId: captured.target?.sessionId,
+      canDispatch,
       reconcile: async () => refreshCurrentChatSessionList(host),
     });
     synchronize?.();
@@ -479,6 +489,23 @@ export async function switchChatModel(
   const ownsModelOverride = () =>
     !isUiSelectedGlobalSessionKey(host, targetSessionKey) ||
     resolveUiSelectedGlobalAgentId(host) === modelOwnerAgentId;
+  const patch: SessionPatch = {
+    model: nextModel || null,
+    ...(runtimeSelection !== undefined ? { agentRuntime: runtimeSelection } : {}),
+  };
+  const canDispatch = () =>
+    ownsSelection() &&
+    readSessionMethodScopeAccess(host.hello?.auth, {
+      method: "sessions.patch",
+      params: { key: targetSessionKey, ...patch },
+      sessionScope: true,
+      session: host.sessionsResult?.sessions.find((row) =>
+        areUiSessionKeysEquivalent(row.key, targetSessionKey),
+      ),
+    }).allowed;
+  if (!canDispatch()) {
+    return false;
+  }
   setChatError(host, null, true);
   const switchPromiseRef: { current?: Promise<boolean> } = {};
   const clearPendingSwitch = () => {
@@ -490,21 +517,15 @@ export async function switchChatModel(
   };
   const switchPromise: Promise<boolean> = (async () => {
     try {
-      const patched = await patchChatSessionSettings(
-        host,
-        targetSessionKey,
-        {
-          model: nextModel || null,
-          ...(runtimeSelection !== undefined ? { agentRuntime: runtimeSelection } : {}),
+      const patched = await patchChatSessionSettings(host, targetSessionKey, patch, {
+        ...agentScope,
+        expectedSessionId: selection.expectedSessionId,
+        ownsModelOverride,
+        canDispatch,
+        reconcile: async () => {
+          await refreshCurrentChatSessionList(host);
         },
-        {
-          ...agentScope,
-          ownsModelOverride,
-          reconcile: async () => {
-            await refreshCurrentChatSessionList(host);
-          },
-        },
-      );
+      });
       if (!patched) {
         return false;
       }

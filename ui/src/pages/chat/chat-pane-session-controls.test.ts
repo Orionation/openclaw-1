@@ -16,6 +16,7 @@ import {
   createTestGatewayClient,
   type GatewayRequestHandler,
 } from "../../test-helpers/gateway-client.ts";
+import { sessionMutationGatewayHello } from "../../test-helpers/gateway-methods.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 import { renderChatPaneComposerControls } from "./chat-pane-session-controls.ts";
 import { getPendingChatPickerPatch } from "./chat-settings-patches.ts";
@@ -434,6 +435,7 @@ describe("chat pane composer controls", () => {
       chatRunId: null,
       connected: true,
       client: {},
+      hello: sessionMutationGatewayHello(["operator.write"]),
       chatLoading: false,
       chatModelCatalog: [],
       sessions: { state: { modelOverrides: {} }, think: () => undefined, patch },
@@ -528,6 +530,7 @@ describe("chat pane composer controls", () => {
       connected: true,
       connectionEpoch: 1,
       client: {},
+      hello: sessionMutationGatewayHello(),
       sessions: { state: { modelOverrides: {} }, think: () => undefined, patch },
       sessionKey: key,
       sessionsResult: { defaults: {}, sessions: [selectedSession] },
@@ -619,6 +622,7 @@ describe("chat pane composer controls", () => {
       connected: true,
       connectionEpoch: 1,
       client: {},
+      hello: sessionMutationGatewayHello(),
       chatLoading: false,
       chatModelCatalog: [],
       sessions: {
@@ -871,6 +875,7 @@ describe("chat pane composer controls", () => {
       connected: true,
       connectionEpoch: 1,
       client: {},
+      hello: sessionMutationGatewayHello(),
       chatLoading: false,
       chatModelCatalog: [],
       sessions: {
@@ -946,6 +951,7 @@ describe("chat pane composer controls", () => {
       connected: true,
       connectionEpoch: 1,
       client: {},
+      hello: sessionMutationGatewayHello(),
       chatLoading: false,
       chatModelCatalog: [],
       sessions: {

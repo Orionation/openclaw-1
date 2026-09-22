@@ -230,11 +230,13 @@ export function renderApplicationShell(host: ShellViewHost) {
   const newSessionAccess = readSessionMethodAccess(gatewaySnapshot, {
     method: "sessions.create",
     params: {},
+    sessionScope: true,
   });
   const openNewSession = (agentId: string, target?: NewSessionTarget) => {
     const access = readSessionMethodAccess(context.gateway.snapshot, {
       method: "sessions.create",
       params: {},
+      sessionScope: true,
     });
     if (access.allowed) {
       host.openNewSession(agentId, target);

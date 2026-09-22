@@ -286,6 +286,7 @@ describe("handleAbortChat", () => {
 
     expect(host.pendingAbort).toEqual({
       sourceClient: client,
+      recoveryScope: client.recoveryScope,
       sessionKey: "agent:main",
       runId: "run-main",
     });
@@ -304,6 +305,7 @@ describe("replayPendingChatAbort", () => {
       client,
       pendingAbort: {
         sourceClient: client,
+        recoveryScope: client.recoveryScope,
         runId: "run-main",
         sessionKey: "global",
         agentId: "work",
@@ -333,6 +335,7 @@ describe("replayPendingChatAbort", () => {
       },
       pendingAbort: {
         sourceClient: client,
+        recoveryScope: client.recoveryScope,
         runId: "run-main",
         sessionKey: "global",
         agentId: "work",
@@ -343,7 +346,7 @@ describe("replayPendingChatAbort", () => {
 
     expect(request).not.toHaveBeenCalled();
     expect(host.pendingAbort).toBeNull();
-    expect(host.chatError).toContain("operator.write");
+    expect(host.chatError).toContain("operator.sessions.write");
     expect(host.lastError).toBe(host.chatError);
   });
 
@@ -356,6 +359,7 @@ describe("replayPendingChatAbort", () => {
       client,
       pendingAbort: {
         sourceClient: client,
+        recoveryScope: client.recoveryScope,
         runId: "run-main",
         sessionKey: "agent:main:telegram:direct:queued-user",
       },
@@ -376,6 +380,7 @@ describe("replayPendingChatAbort", () => {
       client: createTestGatewayClient(replacementRequest),
       pendingAbort: {
         sourceClient,
+        recoveryScope: sourceClient.recoveryScope,
         runId: "run-main",
         sessionKey: "agent:main:telegram:direct:queued-user",
       },

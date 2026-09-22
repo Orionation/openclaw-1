@@ -17,6 +17,7 @@ import {
   isUiGlobalSessionKey,
   resolveUiGlobalAliasAgentId,
   resolveUiSelectedSessionAgentId,
+  uiConversationMatches,
   uiSessionRowMatchesSelectedChat,
   type UiSessionDefaultsHost,
 } from "../../lib/sessions/session-key.ts";
@@ -120,6 +121,8 @@ type ChatAbortRunState = SessionScopeHost & {
   sessionKey: string;
   chatRunId?: string | null;
   chatRunSessionAbortable?: boolean;
+  sessionsResult?: SessionsListResult | null;
+  sessionsResultAgentId?: string | null;
   lastError?: string | null;
   chatError?: string | null;
   /** Reloads history and the authoritative session row. */
@@ -128,8 +131,10 @@ type ChatAbortRunState = SessionScopeHost & {
 
 type ChatAbortIntentBase = {
   sourceClient: GatewayBrowserClient;
+  recoveryScope: string;
   sessionKey: string;
   agentId?: string;
+  sessionId?: string;
 };
 
 export type PendingChatAbort = ChatAbortIntentBase & {
@@ -150,7 +155,7 @@ type ChatAbortIntent =
 type ChatAbortHost = ChatAbortRunState &
   ChatInputHistoryState & {
     pendingAbort?: PendingChatAbort | null;
-    sessionsResult?: SessionsListResult | null;
+    sessions?: Partial<Pick<SessionCapability, "deletionState">>;
   };
 
 const CHAT_STOP_COMMANDS = new Set(["/stop", "stop", "esc", "abort", "wait", "exit"]);
@@ -290,33 +295,18 @@ async function requestChatAbort(
   intent: ChatAbortIntent,
 ): Promise<ChatAbortRequestResult> {
   try {
-    let response: unknown;
-    if (intent.runId !== null) {
-      if (intent.sessionAbortable) {
-        // Recovered embedded runs keep their exact run identity on the
-        // session-owned abort path; sessions.abort resolves the embedded owner
-        // by run id so a delayed Stop cannot abort replacement work.
-        response = await client.request("sessions.abort", {
-          key: intent.sessionKey,
-          ...(intent.agentId ? { agentId: intent.agentId } : {}),
-          runId: intent.runId,
-        });
-      } else {
-        response = await client.request("chat.abort", {
-          sessionKey: intent.sessionKey,
-          ...(intent.agentId ? { agentId: intent.agentId } : {}),
-          runId: intent.runId,
-        });
-      }
-    } else {
-      // A channel reply can be active without a browser-local chat run ID.
-      // Session abort resolves the selected persisted session's exact run.
-      response = await client.request("sessions.abort", {
-        key: intent.sessionKey,
-        ...(intent.agentId ? { agentId: intent.agentId } : {}),
-        ...(intent.clearQueued ? { clearQueued: true } : {}),
-      });
-    }
+    // Embedded and row-only runs use the session owner. Exact captured runs
+    // keep their identity on either method so Stop cannot abort replacement work.
+    const browserRun = intent.runId !== null && !intent.sessionAbortable;
+    const response = await client.request(browserRun ? "chat.abort" : "sessions.abort", {
+      ...(browserRun ? { sessionKey: intent.sessionKey } : { key: intent.sessionKey }),
+      ...(intent.agentId ? { agentId: intent.agentId } : {}),
+      ...(intent.runId !== null
+        ? { runId: intent.runId }
+        : intent.clearQueued
+          ? { clearQueued: true }
+          : {}),
+    });
     return { ok: true, noActiveRun: readNoActiveRunResponse(response) };
   } catch (err) {
     return { ok: false, error: err };
@@ -338,17 +328,35 @@ async function settleNoopAbort(state: ChatAbortRunState, intent: ChatAbortIntent
   await state.refreshCurrentChat?.();
 }
 
+function chatAbortTargetSession(
+  host: ChatAbortRunState,
+  target: Pick<ChatAbortIntentBase, "sessionKey" | "agentId">,
+) {
+  return host.sessionsResult?.sessions.find((row) =>
+    uiConversationMatches(
+      host,
+      target.sessionKey,
+      row.key,
+      row.agentId ?? host.sessionsResultAgentId ?? undefined,
+      target.agentId,
+    ),
+  );
+}
+
 function currentChatAbortIntent(
   state: ChatAbortRunState,
   sourceClient: GatewayBrowserClient,
 ): ChatAbortIntent {
   const sessionAbortable = state.chatRunSessionAbortable === true;
   const runId = state.chatRunId ?? null;
-  const base = {
+  const target = {
     sourceClient,
+    recoveryScope: state.hello?.auth?.recoveryScope ?? sourceClient.recoveryScope,
     sessionKey: state.sessionKey,
     ...scopedAgentParamsForSession(state, state.sessionKey),
   };
+  const sessionId = chatAbortTargetSession(state, target)?.sessionId;
+  const base = { ...target, ...(sessionId ? { sessionId } : {}) };
   return runId
     ? { ...base, runId, ...(sessionAbortable ? { sessionAbortable: true } : {}) }
     : {
@@ -358,20 +366,21 @@ function currentChatAbortIntent(
       };
 }
 
-async function abortChatRun(state: ChatAbortRunState): Promise<void> {
+async function abortChatRun(state: ChatAbortRunState, intent?: ChatAbortIntent) {
   const client = state.client;
   if (!client || !state.connected) {
-    return;
+    return false;
   }
-  const intent = currentChatAbortIntent(state, client);
-  const result = await requestChatAbort(client, intent);
+  const captured = intent ?? currentChatAbortIntent(state, client);
+  const result = await requestChatAbort(client, captured);
   if (!result.ok) {
     setChatError(state, formatConnectError(result.error));
-    return;
+    return false;
   }
   if (result.noActiveRun) {
-    await settleNoopAbort(state, intent);
+    await settleNoopAbort(state, captured);
   }
+  return true;
 }
 
 export async function replayPendingChatAbort(host: ChatAbortHost): Promise<boolean> {
@@ -380,39 +389,58 @@ export async function replayPendingChatAbort(host: ChatAbortHost): Promise<boole
   if (!intent || !client || !host.connected) {
     return false;
   }
-  // Consume before sending so repeated connected snapshots cannot duplicate
-  // the exact-run request.
-  host.pendingAbort = null;
-  // Automatic reconnects retain the browser client. A replacement client may
-  // target another Gateway, where the same session key can name unrelated work.
-  if (intent.sourceClient !== client) {
+  const recoveryScope =
+    host.hello?.auth?.recoveryScope ??
+    (client.recoveryScopeReady ? client.recoveryScope : undefined);
+  // A retained browser client can reconnect as another principal. The hello
+  // owns that identity before asynchronous recovery finishes updating the client.
+  if (
+    intent.sourceClient !== client ||
+    (recoveryScope !== undefined && intent.recoveryScope !== recoveryScope)
+  ) {
+    host.pendingAbort = null;
+    return false;
+  }
+  if (recoveryScope === undefined) {
+    return false;
+  }
+  if (
+    host.sessions?.deletionState?.(intent.sessionKey, intent.agentId, intent.sessionId) ===
+    "confirmed"
+  ) {
+    host.pendingAbort = null;
+    return false;
+  }
+  const session = chatAbortTargetSession(host, intent);
+  if (intent.sessionId && session?.sessionId && session.sessionId !== intent.sessionId) {
+    host.pendingAbort = null;
     return false;
   }
   const access = readChatSessionActionAccess(
     { client, hello: host.hello, phase: "connected" },
     true,
+    { session, sessionAbortable: intent.sessionAbortable },
   ).abort;
+  if (!access.allowed && access.cause === "session-not-owned" && !session) {
+    // Reconnect can precede the canonical row. Its publication retries this
+    // one exact intent; absence must neither authorize it nor discard it.
+    return false;
+  }
+  // Consume before sending so repeated publications cannot duplicate the
+  // exact-run request, and restored permissions cannot revive rejected intent.
+  host.pendingAbort = null;
   if (!access.allowed) {
     setChatError(host, access.reason);
     return false;
   }
-  const result = await requestChatAbort(client, intent);
-  if (result.ok) {
-    if (result.noActiveRun) {
-      await settleNoopAbort(host, intent);
-    }
-    return true;
-  }
-  setChatError(host, formatConnectError(result.error));
-  return false;
+  return abortChatRun(host, intent);
 }
 
 export async function handleAbortChat(host: ChatAbortHost, opts?: ChatAbortOptions): Promise<void> {
-  const disconnectedClient = host.connected ? null : host.client;
-  const disconnectedIntent = disconnectedClient
-    ? currentChatAbortIntent(host, disconnectedClient)
-    : null;
-  const pendingAbort = disconnectedIntent?.runId ? disconnectedIntent : null;
+  const disconnectedIntent =
+    !host.connected && host.client ? currentChatAbortIntent(host, host.client) : null;
+  const pendingAbort =
+    disconnectedIntent?.runId && disconnectedIntent.recoveryScope ? disconnectedIntent : null;
   if (!host.connected && !pendingAbort) {
     // Session-only stops cannot be replayed safely against a later run.
     // Explain the blocked action instead of leaving the visible Stop inert.
