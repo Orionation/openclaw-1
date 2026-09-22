@@ -6,6 +6,7 @@ import {
   bindOperatorModelExecution,
 } from "../agents/admitted-run-context.js";
 import { runWithModelFallback } from "../agents/model-fallback-runner.js";
+import { resolveReplyOperatorAuthorityKey } from "../auto-reply/reply/reply-tool-authority.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../state/user-profiles.js";
@@ -23,6 +24,7 @@ import {
 } from "./operator-role-policy.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import type { GatewayClient } from "./server-methods/shared-types.js";
+import { createContext as createGatewayTestContext } from "./server-plugin-in-process-dispatch.test-support.js";
 
 const guestRole = {
   sessions: { others: "view" },
@@ -78,6 +80,91 @@ function identifiedClient(profileId: string): GatewayClient {
 afterEach(() => closeOpenClawStateDatabaseForTest());
 
 describe("operator role policy", () => {
+  it.each(["invocation", "access", "gateway resolver"] as const)(
+    "keeps independent %s dependencies separate while retaining inherited authority",
+    async (dependencyKind) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const profile = ensureProfileForEmail("independent-model-custody@example.test");
+        const cfg = roleConfig();
+        cfg.agents = { defaults: { model: "fixture/a" } };
+        const role = expectDefined(cfg.gateway?.roles?.definitions.guest, "guest role");
+        role.modelPolicy = { allow: ["fixture/*"] };
+        const client = identifiedClient(profile.id);
+        const context = createGatewayTestContext();
+        context.getRuntimeConfig = () => cfg;
+        const controllers = [new AbortController(), new AbortController()];
+        const dependencies = controllers.map((controller) => ({
+          signal: controller.signal,
+          assertCurrent: () => controller.signal.throwIfAborted(),
+        }));
+        const captures: NonNullable<ReturnType<typeof captureGatewayOperatorRunAuthority>>[] = [];
+        const capture = (params: Parameters<typeof captureGatewayOperatorRunAuthority>[0]) => {
+          const result = expectDefined(
+            captureGatewayOperatorRunAuthority(params),
+            "operator capture",
+          );
+          captures.push(result);
+          return result.authority;
+        };
+        try {
+          const [first, second] = dependencies.map((dependency) =>
+            capture({
+              client,
+              context:
+                dependencyKind === "gateway resolver"
+                  ? {
+                      getRuntimeConfig: context.getRuntimeConfig,
+                      resolveGatewayContext: () =>
+                        dependency.signal.aborted ? undefined : context,
+                    }
+                  : context,
+              ...(dependencyKind === "invocation"
+                ? { invocationAuthority: dependency }
+                : dependencyKind === "access"
+                  ? { sourceAuthority: dependency }
+                  : {}),
+            }),
+          );
+          const original = expectDefined(first, "first source");
+          const independent = expectDefined(second, "independent source");
+          expect(resolveReplyOperatorAuthorityKey(independent)).not.toBe(
+            resolveReplyOperatorAuthorityKey(original),
+          );
+          const narrowed = capture({
+            client: {
+              ...client,
+              connect: { ...client.connect, scopes: [] },
+              internal: { operatorRunAuthority: original },
+            },
+            context,
+          });
+          expect(narrowed.source).toBe(original.source);
+          expect(narrowed.scopes).toEqual([]);
+          expect(resolveReplyOperatorAuthorityKey(narrowed)).not.toBe(
+            resolveReplyOperatorAuthorityKey(original),
+          );
+          expect(() =>
+            assertOperatorModelAllowed(narrowed, { provider: "fixture", model: "b" }),
+          ).not.toThrow();
+          expectDefined(controllers[0], "first dependency").abort(new Error("dependency ended"));
+          if (dependencyKind === "gateway resolver") {
+            expect(original.assertCurrent).toThrow("authority is no longer active");
+            expect(narrowed.assertCurrent).toThrow("authority is no longer active");
+          } else {
+            expect(original.signal?.aborted).toBe(true);
+            expect(narrowed.signal?.aborted).toBe(true);
+          }
+          expect(independent.signal?.aborted).toBe(false);
+          expect(independent.assertCurrent).not.toThrow();
+        } finally {
+          for (const captured of captures) {
+            captured.release();
+          }
+        }
+      });
+    },
+  );
+
   it.each([
     { ended: "request", independent: false },
     { ended: "access", independent: false },
