@@ -14,10 +14,15 @@ export async function cleanupUpdateTemporaryDirectory(params: {
   directory: string;
   root: string;
   name: string;
+  /** Recheck custody inside the warning boundary; false retains the directory. */
+  canRemove?: () => Promise<boolean>;
   onWarning: (step: UpdateStepResult) => void;
 }): Promise<void> {
   const started = Date.now();
   try {
+    if (params.canRemove && !(await params.canRemove())) {
+      return;
+    }
     await fs.rm(params.directory, { recursive: true, force: true });
   } catch (error) {
     const command = formatUpdateCleanupCommand(params.directory);
