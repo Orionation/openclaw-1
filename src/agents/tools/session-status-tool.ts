@@ -13,7 +13,6 @@ import type {
 } from "../../auto-reply/thinking.js";
 import { resolveSessionStorePathCore, type SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { hasOperatorToolGatewayAuthority } from "../../gateway/server-plugin-in-process-dispatch.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import {
   buildAgentMainSessionKey,
@@ -58,11 +57,7 @@ import {
   SESSION_STATUS_TOOL_DISPLAY_SUMMARY,
 } from "../tool-description-presets.js";
 import type { AnyAgentTool } from "./common.js";
-import {
-  readNonNegativeIntegerParam,
-  readToolStringParam,
-  ToolAuthorizationError,
-} from "./common.js";
+import { readNonNegativeIntegerParam, readToolStringParam } from "./common.js";
 import {
   callAgentToolGatewayRequest,
   hasGatewayToolRoutingContext,
@@ -858,11 +853,6 @@ export function createSessionStatusTool(opts?: {
           const modelRaw = readToolStringParam(params, "model");
           let changedModel = false;
           if (typeof modelRaw === "string") {
-            if (hasOperatorToolGatewayAuthority() && !gatewayScoped) {
-              throw new ToolAuthorizationError(
-                "Operator model selection requires a current Gateway.",
-              );
-            }
             const patched = await patchSessionStatusModel({
               cfg,
               agentId,

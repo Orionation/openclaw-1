@@ -43,10 +43,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { createSessionDiffBaselineCaptureClaim } from "../config/sessions/session-diff-baseline-capture.js";
 import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
-import {
-  buildSessionCreationStamp,
-  inheritSessionCreationPolicy,
-} from "../config/sessions/session-entry-provenance.js";
+import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
 import { inheritSessionSelection } from "../config/sessions/session-entry-selection.js";
 import {
   createInternalHookEvent,
@@ -88,6 +85,7 @@ import {
 } from "./server-methods/sessions-patch-model-selection.js";
 import { existingSessionSelectionWouldChange } from "./session-create-existing-selection.js";
 import { buildForkedGatewaySessionEntry } from "./session-create-fork-entry.js";
+import { resolveSessionCreateInheritance } from "./session-create-inheritance.js";
 import {
   createSessionCreateCommitGuard,
   prepareSessionCreateDefaultAccount,
@@ -728,19 +726,10 @@ export async function createGatewaySession(
 
     // The locked parent owns delegated isolation, including signed remote callers whose
     // transport context carries only agent identity and cannot carry creator authority.
-    const creation =
-      params.creation?.via === "spawn"
-        ? {
-            ...params.creation,
-            ...inheritSessionCreationPolicy(
-              {
-                sandbox: currentParentSessionEntry?.sandbox,
-                createdActor: currentParentSessionEntry?.createdActor,
-              },
-              params.creation.actor,
-            ),
-          }
-        : params.creation;
+    const { creation, ownerAssignment: inheritedSpawnOwner } = resolveSessionCreateInheritance({
+      creation: params.creation,
+      parent: currentParentSessionEntry,
+    });
     const target = creationTarget;
     const currentTargetEntry = loadGatewaySessionEntryReadOnly(target.canonicalKey, {
       agentId: target.agentId,
@@ -1128,6 +1117,7 @@ export async function createGatewaySession(
                 sandbox: creation.sandbox ?? resolveCreatorSandbox(params.cfg, creation),
               })
             : {}),
+          ...(createdNewEntry && inheritedSpawnOwner ? { owner: inheritedSpawnOwner } : {}),
           ...(params.visibility && createdNewEntry ? { visibility: params.visibility } : {}),
           ...projectPreparedSessionWorkspace(existingEntry, {
             projectId,
@@ -1367,6 +1357,11 @@ export async function createGatewaySession(
           : {}),
         ...(commitGuard ? { commitGuard } : {}),
         ...(preparedLifecycle?.withCommit ? { withCommit: preparedLifecycle.withCommit } : {}),
+        ...(inheritedSpawnOwner
+          ? {
+              resolveOwnerAssignment: () => (createdNewEntry ? inheritedSpawnOwner : undefined),
+            }
+          : {}),
         onLifecycleCommitted: (entry) => {
           lifecyclePreparationCommitted = true;
           if (createdNewEntry) {

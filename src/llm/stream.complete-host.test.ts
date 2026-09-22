@@ -99,8 +99,10 @@ describe("LLM completion transport host", () => {
       }),
     ).resolves.toEqual(message);
     await expect(completeSimple(model, { messages: [] })).resolves.toEqual(message);
+    await expect(complete(model, { messages: [] })).resolves.toEqual(message);
     expect(providerStream.mock.calls.map((call) => call[2]?.headers)).toEqual([
       { "x-runtime-host": "prepared" },
+      undefined,
       undefined,
     ]);
   });
@@ -160,29 +162,35 @@ describe("LLM completion transport host", () => {
       expect(controller.signal.aborted).toBe(authority === "aborted");
     },
   );
+
   it.each(["current", "retired", "aborted"] as const)(
     "checks %s full-completion authority after transport initialization",
     async (authority) => {
       const { model, message, providerStream } = createCompletionRuntime();
       const controller = new AbortController();
       const retired = new Error("Completion owner retired.");
+      const options = { signal: controller.signal };
       let current = true;
-      const completion = complete(model, { messages: [] }, { signal: controller.signal }, () => {
+      const completion = complete(model, { messages: [] }, options, () => {
         if (!current) {
           throw retired;
         }
       });
+      // Even a warm transport host yields before it invokes the provider.
       current = authority !== "retired";
       if (authority === "aborted") {
         controller.abort(retired);
       }
+
       if (authority === "current") {
         await expect(completion).resolves.toEqual(message);
         expect(providerStream).toHaveBeenCalledOnce();
+        expect(providerStream.mock.calls[0]?.[2]).toBe(options);
       } else {
         await expect(completion).rejects.toBe(retired);
         expect(providerStream).not.toHaveBeenCalled();
       }
+      expect(controller.signal.aborted).toBe(authority === "aborted");
     },
   );
 });

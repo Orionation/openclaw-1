@@ -211,7 +211,7 @@ export async function applySessionModelSelectionInternal(
   const operatorScope = params.operatorAuthority
     ? undefined
     : (
-        await import("../gateway/server-plugin-in-process-dispatch.js")
+        await import("../gateway/operator-invocation-authority.js")
       ).captureOperatorToolGatewayAuthority();
   const operatorAuthority = params.operatorAuthority ?? operatorScope?.authority;
 

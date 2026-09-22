@@ -139,20 +139,24 @@ export async function prepareCodexAttemptTurnRequest(
       resourceState.thread,
       params.expectedSessionRuntimeOwnership,
     );
-    const nativeModel = usesSupervisionConnection
-      ? requireCodexSupervisionModelSelection(resourceState.thread)
-      : undefined;
+    // Each retry selects anew, but an accepted write must settle its original thread.
     const selectedThread = resourceState.thread;
+    const { threadId, liveThreadOwnership, model, modelProvider } = selectedThread;
+    const turnClient = resourceState.client;
+    const nativeModel = usesSupervisionConnection
+      ? requireCodexSupervisionModelSelection(selectedThread)
+      : undefined;
     const assertTurnCurrent = () => {
       connection.assertCurrent();
-      selectedThread.liveThreadOwnership?.assertCurrent();
+      liveThreadOwnership?.assertCurrent();
       if (
         resourceState.thread !== selectedThread ||
-        (nativeModel &&
-          (selectedThread.model !== nativeModel.model ||
-            selectedThread.modelProvider !== nativeModel.modelProvider))
+        selectedThread.threadId !== threadId ||
+        selectedThread.liveThreadOwnership !== liveThreadOwnership ||
+        selectedThread.model !== model ||
+        selectedThread.modelProvider !== modelProvider
       ) {
-        throw new Error("Codex native model or thread ownership changed before turn dispatch.");
+        throw new Error("Codex native model or thread ownership changed during turn start.");
       }
     };
     const turnAppServer = withCodexAppServerFastModeServiceTier(
@@ -201,7 +205,7 @@ export async function prepareCodexAttemptTurnRequest(
           ? { provider: params.provider, model: params.modelId }
           : turnStartParams.model
             ? {
-                provider: selectedThread.modelProvider ?? params.provider,
+                provider: modelProvider ?? params.provider,
                 model: turnStartParams.model,
               }
             : undefined,
@@ -298,7 +302,7 @@ export async function prepareCodexAttemptTurnRequest(
       .join("\n");
     try {
       const startedTurn = assertCodexTurnStartResponse(
-        await resourceState.client.request("turn/start", turnStartParams, {
+        await turnClient.request("turn/start", turnStartParams, {
           timeoutMs: params.timeoutMs,
           signal: runAbortController.signal,
           assertCurrent: () => {
@@ -308,11 +312,7 @@ export async function prepareCodexAttemptTurnRequest(
         }),
       );
       acceptedTurnId = startedTurn.turn.id;
-      resources.nativeProcessAuthority?.bindTurn(
-        resourceState.client,
-        resourceState.thread.threadId,
-        acceptedTurnId,
-      );
+      resources.nativeProcessAuthority?.bindTurn(turnClient, threadId, acceptedTurnId);
       assertTurnCurrent();
       // Fitting may drop or truncate references; only acknowledge the complete block.
       if (upstreamUserText.includes(workspaceBootstrapContext.promptContext ?? "")) {
@@ -327,11 +327,11 @@ export async function prepareCodexAttemptTurnRequest(
         // the accepted native turn even when local cancellation hid its response.
         try {
           resourceState.startupClientUnsafe = !(await interruptCodexTurnAndWaitBestEffort(
-            resourceState.client,
-            { threadId: resourceState.thread.threadId, turnId: acceptedTurnId ?? "" },
+            turnClient,
+            { threadId, turnId: acceptedTurnId ?? "" },
           ));
           if (resourceState.startupClientUnsafe) {
-            await retireUnsafeCodexTurnClientBestEffort(resourceState.client, "startup interrupt");
+            await retireUnsafeCodexTurnClientBestEffort(turnClient, "startup interrupt");
           }
         } finally {
           await releaseCurrentRoute();
