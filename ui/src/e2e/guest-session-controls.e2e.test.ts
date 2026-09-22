@@ -3,6 +3,8 @@ import path from "node:path";
 import type { Locator } from "playwright";
 import { expect, it } from "vitest";
 import type { GatewaySessionRow } from "../api/types.ts";
+import type { ApplicationContext } from "../app/context.ts";
+import { sessionNavigationTarget } from "../lib/sessions/route-navigation.ts";
 import type { SessionRowObservation } from "../lib/sessions/session-capability.ts";
 import type { ChatPageHost } from "../pages/chat/chat-state-host.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
@@ -10,7 +12,6 @@ import {
   captureControlUiE2eFailureDiagnostics,
   controlUiSessionUrl,
   installMockGateway,
-  navigateToControlUiSession,
 } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
 import { selectChatModelOption } from "../test-helpers/select-picker-e2e.ts";
@@ -63,17 +64,26 @@ suite.define(() => {
           model: "model-a",
         },
       );
+      const otherAgentSession = createControlUiSessionRow(
+        "agent:research:other-work",
+        "Research notes",
+        timestamp,
+        { sharingRole: "viewer", visibility: "read-only", model: "model-a" },
+      );
       const gateway = await installMockGateway(page, {
         operatorScopes: ["operator.sessions.write"],
         agentModel: "openai/model-a",
         models,
-        sessions: [foreign],
+        sessions: [foreign, otherAgentSession],
         sessionKey: foreign.key,
         presenceUsers: [{ self: true, id: "guest", name: "Guest" }],
         historyMessages: [],
         methodResponses: {
           "agents.list": {
-            agents: [{ id: "main", name: "Main", model: { primary: "openai/model-a" } }],
+            agents: [
+              { id: "main", name: "Main", model: { primary: "openai/model-a" } },
+              { id: "research", name: "Research", model: { primary: "openai/model-a" } },
+            ],
             defaultId: "main",
             mainKey: "main",
             scope: "agent",
@@ -92,11 +102,49 @@ suite.define(() => {
           );
         }
       };
+      let navigationTarget = foreign.key;
+      const navigate = async (row: Pick<GatewaySessionRow, "displayName" | "key">) => {
+        navigationTarget = row.key;
+        const target = sessionNavigationTarget({
+          face: "chat",
+          sessionKey: row.key,
+          fallbackAgentId: "main",
+          row,
+        });
+        const expectedPathname = await page.evaluate((options) => {
+          // SAFETY: The fixture selects the registered application and its public runtime.
+          const app = document.querySelector("openclaw-app") as
+            | (HTMLElement & {
+                runtime?: { context: Pick<ApplicationContext, "basePath" | "navigate"> };
+              })
+            | null;
+          if (!app?.runtime) {
+            throw new Error("OpenClaw application runtime is unavailable");
+          }
+          const pathname = `${app.runtime.context.basePath}${options.pathname}`;
+          app.runtime.context.navigate("chat", { ...options, pathname });
+          return pathname;
+        }, target.options);
+        await page.waitForURL((url) => url.pathname === expectedPathname);
+        await page.waitForFunction((key) => {
+          // SAFETY: Registered chat panes expose their selected session key.
+          const pane = document.querySelector(
+            "openclaw-chat-pane.chat-pane-cache__pane--active",
+          ) as (HTMLElement & { sessionKey?: string }) | null;
+          return pane?.sessionKey === key;
+        }, row.key);
+      };
       try {
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, foreign.key));
         const pane = page.locator("openclaw-chat-pane.chat-pane-cache__pane--active");
         const composer = pane.locator(".agent-chat__composer-combobox > textarea");
         await expect.poll(() => composer.isDisabled()).toBe(true);
+        if (initialRun === "started") {
+          await navigate(otherAgentSession);
+          await expect.poll(() => composer.isDisabled()).toBe(true);
+          await navigate(foreign);
+          await expect.poll(() => composer.isDisabled()).toBe(true);
+        }
         const newSession = page.locator(".sidebar-brand__new-thread");
         await expect.poll(() => newSession.isEnabled()).toBe(true);
         await newSession.click();
@@ -153,8 +201,17 @@ suite.define(() => {
           status: initialRun === "started" ? "running" : "done",
           activeRunIds: initialRun === "started" ? ["guest-initial-run"] : [],
         });
-        const roster = sessionsListResponse([foreign, own]);
+        const roster = sessionsListResponse([foreign, otherAgentSession, own]);
         await gateway.setSessionsListResponse(roster);
+        await gateway.setMethodResponse("sessions.list", {
+          cases: [
+            {
+              match: { agentId: "research" },
+              response: sessionsListResponse([otherAgentSession]),
+            },
+            { response: roster },
+          ],
+        });
         await gateway.resolveDeferred("sessions.list", roster);
         await gateway.resolveDeferred("chat.startup");
         await gateway.resolveDeferred("sessions.describe");
@@ -208,23 +265,34 @@ suite.define(() => {
         const runId = String(send.idempotencyKey);
         const stop = pane.getByRole("button", { name: "Stop generating", exact: true });
         await stop.waitFor();
+        const researchListCount = (
+          await gateway.getRequests("sessions.list", { agentId: "research" })
+        ).length;
         await gateway.setOnline(false);
         await expect.poll(() => stop.isEnabled()).toBe(true);
         await stop.click();
         expect(await gateway.getRequests("chat.abort")).toHaveLength(0);
+        await navigate(otherAgentSession);
         await gateway.setOnline(true);
+        await gateway.waitForRequest("sessions.list", {
+          after: researchListCount,
+          match: { agentId: "research" },
+        });
+        await expect.poll(() => composer.isDisabled()).toBe(true);
         expect(requireRecord((await gateway.waitForRequest("chat.abort")).params)).toMatchObject({
           sessionKey: key,
           runId,
         });
         expect(await gateway.getRequests("chat.abort")).toHaveLength(1);
         await gateway.emitGatewayEvent("chat", { sessionKey: key, runId, state: "aborted" });
+        await navigate(own);
+        await expect.poll(() => composer.isEditable()).toBe(true);
         await capture("stopped", composer);
-        await navigateToControlUiSession(page, foreign.key);
+        await navigate(foreign);
         await expect.poll(() => composer.isDisabled()).toBe(true);
         expect(await model.getAttribute("aria-disabled")).toBe("true");
         expect(await permission.isDisabled()).toBe(true);
-        await navigateToControlUiSession(page, key);
+        await navigate(own);
         await expect.poll(() => composer.isEditable()).toBe(true);
         await gateway.setOperatorScopes(["operator.sessions.read"]);
         await gateway.closeLatest(1001, "session permission changed");
@@ -271,7 +339,11 @@ suite.define(() => {
             path.join(suite.artifactDir, `${initialRun}-scope.private.json`),
             JSON.stringify(
               {
+                navigationTarget,
+                url: page.url(),
                 state,
+                abortRequests: await gateway.getRequests("chat.abort"),
+                sessionResolveRequests: await gateway.getRequests("sessions.resolve"),
                 canonical: state.sessionKey ? await gateway.getSessionRow(state.sessionKey) : null,
               },
               null,

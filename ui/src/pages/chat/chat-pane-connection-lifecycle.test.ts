@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
+import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { ChatPaneBase } from "./chat-pane-base.ts";
 import {
   createSessionCapabilityFixture,
@@ -340,7 +341,7 @@ describe("chat pane connection lifecycle", () => {
     const request = vi.fn((method: string) =>
       method === "chat.abort" ? Promise.resolve({ aborted: true }) : new Promise<never>(() => {}),
     );
-    const client = { request } as unknown as GatewayBrowserClient;
+    const client = createTestGatewayClient(request);
     const { pane, state } = createTestChatPane({ client });
     const sessionKey = "agent:main";
     pane.context = {
@@ -364,7 +365,12 @@ describe("chat pane connection lifecycle", () => {
     };
 
     pane.applyGatewaySnapshot({ ...snapshot, phase: "reconnecting", hello: null });
-    state.pendingAbort = { sourceClient: client, runId: "run-main", sessionKey };
+    state.pendingAbort = {
+      sourceClient: client,
+      recoveryScope: "test-recovery-scope",
+      runId: "run-main",
+      sessionKey,
+    };
 
     pane.applyGatewaySnapshot({
       ...snapshot,
@@ -372,7 +378,11 @@ describe("chat pane connection lifecycle", () => {
       hello: {
         type: "hello-ok",
         protocol: 4,
-        auth: { role: "operator", scopes: ["operator.write"] },
+        auth: {
+          role: "operator",
+          scopes: ["operator.write"],
+          recoveryScope: "test-recovery-scope",
+        },
         features: { methods: ["chat.abort"] },
       },
     });

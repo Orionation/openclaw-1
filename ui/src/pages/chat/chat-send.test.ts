@@ -10214,53 +10214,48 @@ describe("handleAbortChat", () => {
     expect(host.chatRunError).toEqual({ summary: "Previous run failed" });
   });
 
-  it("queues a typed exact-run stop while disconnected", async () => {
+  it.each([
+    {
+      name: "queues a typed exact-run stop while disconnected",
+      typedCommand: true,
+      preserveDraft: false,
+    },
+    {
+      name: "queues the active run abort while disconnected",
+      typedCommand: false,
+      preserveDraft: false,
+    },
+    {
+      name: "preserves the draft when queueing a toolbar abort while disconnected",
+      typedCommand: false,
+      preserveDraft: true,
+    },
+  ])("$name", async ({ typedCommand, preserveDraft }) => {
     const request = vi.fn();
     const client = clientWithRequest(request);
     const host = makeChatHost({
       client,
       connected: false,
       chatRunId: "run-main",
-      chatMessage: "/stop",
+      chatMessage: typedCommand ? "/stop" : "draft",
       sessionKey: "agent:main",
     });
 
-    await handleSendChat(host);
+    if (typedCommand) {
+      await handleSendChat(host);
+    } else {
+      await handleAbortChat(host, preserveDraft ? { preserveDraft } : undefined);
+    }
 
     expect(host.pendingAbort).toEqual({
       sourceClient: client,
-      runId: "run-main",
-      sessionKey: "agent:main",
-    });
-    expect(host.chatMessage).toBe("");
-    expect(request).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    { name: "queues the active run abort while disconnected", preserveDraft: false },
-    {
-      name: "preserves the draft when queueing a toolbar abort while disconnected",
-      preserveDraft: true,
-    },
-  ])("$name", async ({ preserveDraft }) => {
-    const client = clientWithRequest(vi.fn());
-    const host = makeChatHost({
-      client,
-      connected: false,
-      chatRunId: "run-main",
-      chatMessage: "draft",
-      sessionKey: "agent:main",
-    });
-
-    await handleAbortChat(host, preserveDraft ? { preserveDraft } : undefined);
-
-    expect(host.pendingAbort).toEqual({
-      sourceClient: client,
+      recoveryScope: "test-recovery-scope",
       runId: "run-main",
       sessionKey: "agent:main",
     });
     expect(host.chatMessage).toBe(preserveDraft ? "draft" : "");
     expect(host.chatRunId).toBe("run-main");
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("does not queue an unversioned session stop while disconnected", async () => {
