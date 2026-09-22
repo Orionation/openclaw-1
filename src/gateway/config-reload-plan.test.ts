@@ -15,27 +15,27 @@ describe("Gateway core reload policy", () => {
   afterEach(() => resetPluginRuntimeStateForTest());
 
   it.each([
-    { change: "allow", restart: false },
-    { change: "deny", restart: false },
-    { change: "source", restart: false },
-    { change: "add-policy", restart: false },
-    { change: "remove-policy", restart: false },
-    { change: "unchanged", restart: false },
-    { change: "scopes", restart: true },
-    { change: "agents", restart: true },
-    { change: "sessions", restart: true },
-    { change: "sandbox", restart: true },
-    { change: "plugin", restart: true },
-    { change: "default", restart: true },
-    { change: "add-role", restart: true },
-    { change: "remove-role", restart: true },
-    { change: "mixed-role", restart: true },
-    { change: "mixed-gateway", restart: true },
-    { change: "effective-scopes", restart: true },
-    { change: "authored-scopes", restart: true },
-    { change: "missing-effective", restart: true },
-    { change: "missing-authored", restart: true },
-  ])("preserves reload ownership for role change: $change", ({ change, restart }) => {
+    { change: "allow", mode: "noop" },
+    { change: "deny", mode: "noop" },
+    { change: "source", mode: "noop" },
+    { change: "add-policy", mode: "noop" },
+    { change: "remove-policy", mode: "noop" },
+    { change: "unchanged", mode: "noop" },
+    { change: "scopes", mode: "hot" },
+    { change: "agents", mode: "hot" },
+    { change: "sessions", mode: "hot" },
+    { change: "sandbox", mode: "hot" },
+    { change: "plugin", mode: "hot" },
+    { change: "default", mode: "hot" },
+    { change: "add-role", mode: "hot" },
+    { change: "remove-role", mode: "hot" },
+    { change: "mixed-role", mode: "hot" },
+    { change: "mixed-gateway", mode: "restart" },
+    { change: "effective-scopes", mode: "hot" },
+    { change: "authored-scopes", mode: "hot" },
+    { change: "missing-effective", mode: "hot" },
+    { change: "missing-authored", mode: "hot" },
+  ])("preserves reload ownership for role change: $change", ({ change, mode }) => {
     const roleName = "reader.modelPolicy.allow";
     const previous: OpenClawConfig = {
       gateway: {
@@ -132,10 +132,12 @@ describe("Gateway core reload policy", () => {
       previousCompareConfig: change === "missing-authored" ? undefined : previousCompareConfig,
       candidateCompareConfig,
     });
-    expect(plan.restartGateway).toBe(restart);
-    if (!restart) {
-      expect(isNoopGatewayReloadPlan(plan)).toBe(true);
+    expect(plan.restartGateway).toBe(mode === "restart");
+    expect(isNoopGatewayReloadPlan(plan)).toBe(mode === "noop");
+    if (mode === "noop") {
       expect(plan.noopPaths).toEqual(changedPaths);
+    } else if (mode === "hot") {
+      expect(plan.hotReasons).toEqual(changedPaths);
     }
   });
 
@@ -195,7 +197,6 @@ describe("Gateway core reload policy", () => {
     "gateway.tls.enabled",
     "gateway.controlUi.basePath",
     "gateway.controlUi.root",
-    "cloudWorkers.profiles.aws.settings.class",
     "browser.enabled",
     "browser.evaluateEnabled",
     "browser.ssrfPolicy.allowedHostnames",
@@ -203,7 +204,6 @@ describe("Gateway core reload policy", () => {
     "gateway.auth.mode",
     "discovery.wideArea.domain",
     "diagnostics.otel.endpoint",
-    "acp.backend",
     "memory.search.enabled",
     "security.unknownPolicy",
     "secrets.egressProxy.enabled",

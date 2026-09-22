@@ -61,6 +61,7 @@ import {
 } from "./session-create-root.js";
 import { resolveSessionCreateSpawnContext } from "./session-create-spawn.js";
 import { resolveOperatorSessionCreation } from "./session-creation-provenance.js";
+import { bindGatewayRequestHandlerMutationAuthority } from "./session-mutation-guards.js";
 import { sessionLog } from "./sessions-shared.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { prepareSessionModelAccountAccess } from "./users-model-account-access.js";
@@ -68,18 +69,17 @@ import { assertValidParams } from "./validation.js";
 import { resolveWorkspacePathContainment } from "./workspace-path-containment.js";
 
 export const sessionCreateHandlers: GatewayRequestHandlers = {
-  "sessions.create": async ({
-    req,
-    params,
-    respond,
-    context,
-    client,
-    isWebchatConnect,
-    sessionMutationCommitGuard,
-    sessionMutationAuthorization,
-    signal,
-    hasCurrentClientAuthority,
-  }) => {
+  "sessions.create": async (options) => {
+    const {
+      params,
+      respond,
+      context,
+      client,
+      sessionMutationCommitGuard,
+      sessionMutationAuthorization,
+      signal,
+      hasCurrentClientAuthority,
+    } = options;
     if (!assertValidParams(params, validateSessionsCreateParams, "sessions.create", respond)) {
       return;
     }
@@ -111,10 +111,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     const requestedModel = normalizeOptionalString(p.model);
     let personalAccounts: ReturnType<typeof prepareSessionModelAccountAccess>;
     try {
-      personalAccounts = prepareSessionModelAccountAccess(
-        { client, context, signal },
-        requestedModel,
-      );
+      personalAccounts = prepareSessionModelAccountAccess(options, requestedModel);
     } catch (error) {
       if (!(error instanceof ModelAccountConnectAuthorityError)) {
         throw error;
@@ -529,6 +526,15 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       loadGatewayModelCatalogSnapshot: () =>
         context.loadGatewayModelCatalogSnapshot({ agentId: sessionAgentId }),
       commitGuard,
+      onCreatedSessionCommitted: (committed) => {
+        sessionMutationAuthorization?.recordCreatedSession?.({
+          agentId: committed.agentId,
+          sessionKey: committed.key,
+          storePath: committed.storePath,
+          sessionId: committed.entry.sessionId,
+          lifecycleRevision: committed.entry.lifecycleRevision,
+        });
+      },
       afterCreate: async (session) => {
         if (!authority.hasActive()) {
           return;
@@ -537,29 +543,31 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
           scheduleCreatedDashboardSessionTitle(session, cfg, context, p.titleSource);
           return;
         }
-        await handleDirectExternalChatSend({
-          req,
-          params: {
-            sessionKey: session.key,
-            agentId: session.agentId,
-            message: message ?? "",
-            idempotencyKey: initialRunId,
-            ...(p.timeoutMs !== undefined ? { timeoutMs: p.timeoutMs } : {}),
-            ...(p.mentions ? { mentions: p.mentions } : {}),
-            ...(attachments ? { attachments } : {}),
+        const sendOptions = bindGatewayRequestHandlerMutationAuthority(
+          options,
+          {
+            ...options,
+            params: {
+              sessionKey: session.key,
+              agentId: session.agentId,
+              message: message ?? "",
+              idempotencyKey: initialRunId,
+              ...(p.timeoutMs !== undefined ? { timeoutMs: p.timeoutMs } : {}),
+              ...(p.mentions ? { mentions: p.mentions } : {}),
+              ...(attachments ? { attachments } : {}),
+            },
+            respond: (ok, payload, error, meta) => {
+              if (ok && payload && typeof payload === "object") {
+                runPayload = payload as Record<string, unknown>;
+              } else {
+                runError = error;
+              }
+              runMeta = meta;
+            },
           },
-          respond: (ok, payload, error, meta) => {
-            if (ok && payload && typeof payload === "object") {
-              runPayload = payload as Record<string, unknown>;
-            } else {
-              runError = error;
-            }
-            runMeta = meta;
-          },
-          context,
-          client,
-          isWebchatConnect,
-        });
+          undefined,
+        );
+        await handleDirectExternalChatSend(sendOptions);
       },
     };
     let capturedOperator: ReturnType<typeof captureGatewayOperatorRunAuthority>;
@@ -568,7 +576,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
         client,
         context,
         hasCurrentClientAuthority,
-        sourceAuthority: { assertCurrent: commitGuard, signal },
+        invocationAuthority: { assertCurrent: commitGuard, signal },
       });
     } catch (error) {
       respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, formatErrorMessage(error)));

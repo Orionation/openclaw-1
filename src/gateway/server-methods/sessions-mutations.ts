@@ -87,7 +87,7 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
           client,
           context,
           hasCurrentClientAuthority,
-          sourceAuthority: { assertCurrent: () => sessionMutationCommitGuard?.(), signal },
+          invocationAuthority: { assertCurrent: () => sessionMutationCommitGuard?.(), signal },
         });
       }
       const executed = await executeSessionPatchMutations({
@@ -170,7 +170,7 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
           client,
           context,
           hasCurrentClientAuthority,
-          sourceAuthority: {
+          invocationAuthority: {
             assertCurrent: () => {
               sessionMutationCommitGuard?.();
               sessionMutationAuthorization?.assertCurrent();

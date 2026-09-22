@@ -124,7 +124,7 @@ export const sessionCompanionHandlers: GatewayRequestHandlers = {
         client,
         context,
         hasCurrentClientAuthority,
-        sourceAuthority: { assertCurrent: assertSourceCurrent, signal },
+        invocationAuthority: { assertCurrent: assertSourceCurrent, signal },
       });
       const result = await context.sessionCompanion.ask({
         sessionKey: target.sessionKey,

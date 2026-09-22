@@ -49,7 +49,7 @@ export function captureAmbientGatewayOperatorAuthority(params: {
           client: scope.client,
           context,
           hasCurrentClientAuthority: scope.hasCurrentClientAuthority,
-          sourceAuthority: {
+          invocationAuthority: {
             assertCurrent: () => scope.signal?.throwIfAborted(),
             signal: scope.signal,
           },

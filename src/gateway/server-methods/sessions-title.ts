@@ -93,7 +93,7 @@ export const sessionTitleHandlers: GatewayRequestHandlers = {
         client,
         context,
         hasCurrentClientAuthority,
-        sourceAuthority: { assertCurrent: assertCallerCurrent, signal },
+        invocationAuthority: { assertCurrent: assertCallerCurrent, signal },
       });
       const selection = prepareSessionCreateModelSelection({
         cfg,

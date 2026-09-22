@@ -78,17 +78,23 @@ function identifiedClient(profileId: string): GatewayClient {
 afterEach(() => closeOpenClawStateDatabaseForTest());
 
 describe("operator role policy", () => {
-  it.each(["request", "access"] as const)(
-    "retains both request and client access authority when the %s source ends",
-    async (ended) => {
+  it.each([
+    { ended: "request", independent: false },
+    { ended: "access", independent: false },
+    { ended: "access", independent: true },
+  ] as const)(
+    "retains request and selected access authority when $ended ends (independent: $independent)",
+    async ({ ended, independent }) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const profile = ensureProfileForEmail("model-source-composition@example.test");
         const request = new AbortController();
         const access = new AbortController();
         const cfg = roleConfig();
         const client = identifiedClient(profile.id);
+        const grant = { pluginId: "visitor-access", grantId: "synthetic-grant" };
         client.internal = {
           operatorAccessAuthority: {
+            gatewayAccessGrant: grant,
             signal: access.signal,
             assertCurrent: () => access.signal.throwIfAborted(),
           },
@@ -96,19 +102,25 @@ describe("operator role policy", () => {
         const captured = captureGatewayOperatorRunAuthority({
           client,
           context: { getRuntimeConfig: () => cfg },
-          sourceAuthority: {
+          ...(independent ? { sourceAuthority: null } : {}),
+          invocationAuthority: {
             signal: request.signal,
             assertCurrent: () => request.signal.throwIfAborted(),
           },
         })!;
         try {
+          expect(captured.authority.gatewayAccessGrant).toEqual(independent ? null : grant);
           expect(captured.authority.assertCurrent).not.toThrow();
           const endedSource = ended === "request" ? request : access;
           const otherSource = ended === "request" ? access : request;
           endedSource.abort(new Error(`${ended} source ended`));
           expect(otherSource.signal.aborted).toBe(false);
-          expect(captured.authority.signal?.aborted).toBe(true);
-          expect(captured.authority.assertCurrent).toThrow("source ended");
+          expect(captured.authority.signal?.aborted).toBe(!independent);
+          if (independent) {
+            expect(captured.authority.assertCurrent).not.toThrow();
+          } else {
+            expect(captured.authority.assertCurrent).toThrow("source ended");
+          }
         } finally {
           captured.release();
         }

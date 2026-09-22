@@ -19,6 +19,8 @@ import { ApprovalObserverClosedError } from "./exec-approval-lifecycle.js";
 import { installTestApprovalClock } from "./exec-approval-manager.test-support.js";
 import { getOperatorApprovalDetailed } from "./operator-approval-store.js";
 import { createGatewayAuxHandlers } from "./server-aux-handlers.js";
+import { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";
+import { createTestRuntimeSecretsActivator } from "./server-startup-config.test-support.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 import { seedAttachedPlacementEnvironment } from "./worker-environments/placement-test-fixtures.js";
 
@@ -39,10 +41,11 @@ function createAuthorityHarness(
   const aux = createGatewayAuxHandlers({
     log: {},
     getNativeApprovalRouteCoordinator: () => undefined,
-    activateRuntimeSecrets: async () => {
-      throw new Error("unexpected secrets reload");
-    },
-    sharedGatewaySessionGenerationState: { current: undefined, required: null },
+    activateRuntimeSecrets: createTestRuntimeSecretsActivator(),
+    sharedGatewaySessionGenerationState: new SharedGatewaySessionGenerationState({
+      current: undefined,
+      required: null,
+    }),
     resolveSharedGatewaySessionGenerationForConfig: () => undefined,
     clients: [],
     channelManager: {

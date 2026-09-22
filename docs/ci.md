@@ -58,7 +58,15 @@ keeps their Node coverage and runs them on Bun too; see [test runtime selection]
 
 Auto-reply reply tests run files in parallel with two workers per compact group. Their planner uses separate parallel timing identities; until those have measurements, serial group costs are divided by the effective worker count, with single-file groups retaining their full cost.
 
-The complete [startup corpus](/ci/pipeline) uses eight state test files so existing workers can share its release/config matrix. Its explicit fallback prepares the runtime once and uses four workers; historical frozen targets retain their legacy process layout.
+The measured Gateway isolated/database-worker cohort uses at most eight workers
+on those hosts with at least 28 GiB total memory; other packed groups retain
+their existing caps.
+
+Commands tests share the existing worker budget across independent files. The
+Doctor session SQLite cases are split by operation while preserving the complete
+repair and recovery coverage; see [shard weights](/ci/capacity#measured-shard-weights).
+
+The complete [startup corpus](/ci/pipeline) uses eight state test files so existing workers can share its release/config matrix. Its explicit fallback prepares the runtime once and uses up to four workers, capped by available CPU parallelism; historical frozen targets retain their legacy process layout with CPU-bounded admission.
 
 | Page                                                           | Read it when                                                                                                        |
 | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |

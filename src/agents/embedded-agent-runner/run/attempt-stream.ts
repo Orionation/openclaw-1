@@ -11,13 +11,13 @@ import {
   assertOperatorModelAllowed,
   readRunOperatorAuthority,
 } from "../../admitted-run-context.js";
+import { shouldAllowProviderOwnedThinkingReplay } from "../../embedded-agent-helpers/turns.js";
 import { wrapStreamFnTextTransforms } from "../../plugin-text-transforms.js";
 import type { StreamFn } from "../../runtime/index.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { resolveAgentTimeoutMs } from "../../timeout.js";
 import { UNKNOWN_TOOL_THRESHOLD } from "../../tool-loop-detection.js";
 import { wrapStreamFnCodeModeSource } from "../../transcript-code-mode-source.js";
-import { shouldAllowProviderOwnedThinkingReplay } from "../../transcript-policy.js";
 import type { NormalizedUsage } from "../../usage.js";
 import { log } from "../logger.js";
 import { createPromptCacheRequestObserver } from "../prompt-cache-request-observer.js";

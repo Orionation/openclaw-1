@@ -12,8 +12,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect } from "vitest";
+import { resolveVitestNodeArgs } from "../../scripts/lib/vitest-process-env.mts";
 import { requireNodeTool } from "../helpers/node-toolchain.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { createFixtureGit } from "./pr-merge-fixture-git.test-support.js";
 import { landingSnapshotQuery } from "./pr-merge-snapshot.test-support.js";
 import { validReview, writeReviewArtifacts } from "./pr-review-artifact-fixture.js";
 
@@ -23,6 +25,7 @@ export function createMergeOutcomeFixtureHarness() {
   let fixtureTemplate: ReturnType<typeof createFixtureTemplate> | undefined;
   const scripts = join(process.cwd(), "scripts");
   const nodeExecutable = requireNodeTool("node");
+  const nodeArgs = resolveVitestNodeArgs();
   const outcomeRef = "refs/openclaw/pr-merge-outcomes/123";
   const lockRef = "refs/openclaw/pr-operation-locks/123";
   const describePosix = process.platform === "win32" ? describe.skip : describe;
@@ -42,52 +45,12 @@ export function createMergeOutcomeFixtureHarness() {
   const supportsNoLazyFetch =
     spawnSync("git", ["--no-lazy-fetch", "--version"], { env: gitEnv }).status === 0;
 
-  function createFixtureGit(repo: string) {
-    const git = (args: string[], input?: string, cwd = repo, env?: NodeJS.ProcessEnv) =>
-      execFileSync(
-        "git",
-        ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args],
-        {
-          cwd,
-          env: { ...gitEnv, ...env },
-          input,
-          encoding: "utf8",
-          stdio: ["pipe", "pipe", "pipe"],
-        },
-      ).trim();
-    const tree = (owner: string, sibling = "stable\n") => {
-      const a = git(["hash-object", "-w", "--stdin"], owner);
-      const b = git(["hash-object", "-w", "--stdin"], sibling);
-      return git(["mktree"], `100644 blob ${a}\towner.txt\n100644 blob ${b}\tsibling.txt\n`);
-    };
-    const commit = (
-      contents: string,
-      parents: string[],
-      message = "Fixture commit\n",
-      author?: { name: string; email: string },
-    ) =>
-      git(
-        ["commit-tree", contents, ...parents.flatMap((parent) => ["-p", parent])],
-        message,
-        repo,
-        author
-          ? {
-              GIT_AUTHOR_NAME: author.name,
-              GIT_AUTHOR_EMAIL: author.email,
-              GIT_COMMITTER_NAME: author.name,
-              GIT_COMMITTER_EMAIL: author.email,
-            }
-          : undefined,
-      );
-    return { git, tree, commit };
-  }
-
   function createFixtureTemplate(directory: string) {
     const root = realpathSync(directory);
     const repo = join(root, "repo");
     const remote = join(root, "remote.git");
     mkdirSync(repo);
-    const { git, tree, commit } = createFixtureGit(repo);
+    const { git, tree, commit } = createFixtureGit(repo, gitEnv);
     git(["init", "-q", "-b", "main"]);
     git(["config", "user.name", "Merge Fixture"]);
     git(["config", "user.email", "fixture@example.invalid"]);
@@ -115,7 +78,7 @@ export function createMergeOutcomeFixtureHarness() {
     cpSync(template.repo, repo, copyOptions);
     cpSync(template.remote, remote, copyOptions);
     const { base } = template;
-    const { git, tree, commit } = createFixtureGit(repo);
+    const { git, tree, commit } = createFixtureGit(repo, gitEnv);
     git(["remote", "add", "origin", remote]);
     const sourceCommits: string[] = [];
     let head = base;
@@ -230,6 +193,8 @@ export function createMergeOutcomeFixtureHarness() {
       // Preserve GraphQL lifecycle fixtures through an explicit unsupported REST policy.
       restPolicy: "classic",
       restReadFailure: "",
+      restDispatchChange: "",
+      pooledMergeBlocked: false,
       restReadFailuresRemaining: 0,
       restReadFailureAtMainReads: [] as number[],
       restRequiredApp: 15368 as number | null,
@@ -280,11 +245,13 @@ export function createMergeOutcomeFixtureHarness() {
       }>,
       mainAdvances: [] as string[],
       calls: [] as string[][],
+      nodeArgs: [] as string[],
       mutations: 0,
       cancellations: 0,
       cancellation: "success",
       mergeBody: null as string | null,
       previewBody: "Fixture body",
+      previewHeadline: "Configured squash headline (#123)" as string | null,
       tamperMergeBody: false,
       issueComments: [
         {
@@ -313,6 +280,8 @@ export function createMergeOutcomeFixtureHarness() {
       admin: false,
       audit: false,
       gates: "pass",
+      requiredCheckName: "CI",
+      refusalCapture: "error: string rewrite protection blocked unsafe input\n",
       ciExit: 0,
       duringChecks: null as null | { head?: string; artifact?: string; bodyPath?: string },
       review: true,
@@ -351,13 +320,18 @@ const file=process.env.FIXTURE_STATE;
 const s=JSON.parse(fs.readFileSync(file,"utf8"));
 const git=(args,input)=>execFileSync("git",["-c","commit.gpgsign=false","-c","core.hooksPath=/dev/null",...args],{cwd:process.env.FIXTURE_REPO,input,encoding:"utf8"}).trim();
 const save=()=>fs.writeFileSync(file,JSON.stringify(s));
-const out=(value)=>console.log(typeof value==="string"?value:JSON.stringify(value));
+const out=(value)=>{
+  const body=typeof value==="string"?value:JSON.stringify(value);
+  const writerQuery=args.includes("--include")&&args.includes("graphql")&&args.some(arg=>/^query=\\s*query\\b/.test(arg));
+  console.log(writerQuery&&typeof value!=="string"?"HTTP/2.0 200 OK\\n\\n"+body:body);
+};
 const fail=(text)=>{save();console.error(text);process.exit(1)};
 if(route==="watch") {
   if(args[1]!==s.pr.headRefOid) fail("stale CI head");
   process.exit(s.ciExit);
 }
 if(route==="sleep") {s.settlementSleeps.push(Number(args[0]));save();process.exit(0);}
+s.nodeArgs=process.execArgv;
 s.calls.push([route,...args]);save();
 if(args.some(arg=>arg.includes("{owner}")||arg.includes("{repo}"))) fail("protected unresolved repository placeholder");
 const main=()=>git(["--git-dir="+process.env.FIXTURE_REMOTE,"rev-parse","refs/heads/main"]);
@@ -439,6 +413,17 @@ else if(args[0]==="api"&&args.some(arg=>new RegExp("^repos/[^/]+/[^/]+$").test(a
   if(!args.includes("Cache-Control: max-age=0")) fail("missing live repository header");
   if(!args.includes("--hostname")) fail("missing repository hostname");
   if(s.repoAuthorityUnavailable) fail("repository metadata unavailable");
+  if(s.restDispatchChange) {
+    const retained=spawnSync("git",["show","refs/openclaw/pr-merge-outcomes/123:outcome.json"],{cwd:process.env.FIXTURE_REPO,encoding:"utf8"});
+    if(retained.status===0) {
+      const intent=JSON.parse(retained.stdout);
+      if(intent.phase==="intent"&&intent.accepted===false) {
+        if(s.restDispatchChange==="identity") s.pr.headRefOid=git(["rev-parse",s.pr.headRefOid+"^"]);
+        if(s.restDispatchChange==="policy") s.restContexts=["Reconfigured CI"];
+        s.restDispatchChange="";save();
+      }
+    }
+  }
   out(args.includes("--include")?"HTTP/2.0 200 OK\\n\\n"+JSON.stringify(s.repoAuthority):s.repoAuthority);
 }
 else if(args[0]==="api"&&args.includes("user")) {
@@ -453,13 +438,15 @@ else if(args[0]==="api"&&args.includes("repos/fixture/repo/pulls/123")) {
     if(s.restObservation.gates) s.gates=s.restObservation.gates;
     s.restObservation=null;save();
   }
-  out({node_id:s.pr.id,number:s.pr.number,html_url:s.pr.url,title:"Fixture repair",body:s.previewBody,
+  const record={node_id:s.pr.id,number:s.pr.number,html_url:s.pr.url,title:"Fixture repair",body:s.previewBody,
     state:s.pr.state==="OPEN"?"open":"closed",merged:s.pr.state==="MERGED",merged_at:s.pr.state==="MERGED"?"2026-09-20T00:00:00Z":null,
     merge_commit_sha:s.pr.mergeCommit?.oid??null,draft:s.pr.isDraft,
     auto_merge:s.pr.autoMergeRequest?{merge_method:s.pr.autoMergeRequest.mergeMethod.toLowerCase()}:null,
     head:{sha:s.pr.headRefOid,ref:s.pr.headRefName,repo:s.repoAuthority},base:{ref:s.pr.baseRefName,sha:main(),repo:s.repoAuthority},
     user:{login:s.pr.author.login,type:s.pr.author.__typename},
-    mergeable:s.pr.mergeable==="UNKNOWN"?null:s.pr.mergeable==="MERGEABLE",mergeable_state:s.pr.mergeStateStatus.toLowerCase()});
+    mergeable:s.pr.mergeable==="UNKNOWN"?null:s.pr.mergeable==="MERGEABLE",
+    mergeable_state:s.pooledMergeBlocked&&!args.includes("--include")?"blocked":s.pr.mergeStateStatus.toLowerCase()};
+  out(args.includes("--include")?"HTTP/2.0 200 OK\\n\\n"+JSON.stringify(record):record);
 }
 else if(args[0]==="api"&&args.includes("repos/fixture/repo/git/ref/heads/main")) {
   s.restMainReads++;
@@ -533,7 +520,7 @@ else if(args[0]==="pr"&&args[1]==="checks") {
   if(s.duringChecks?.bodyPath) fs.writeFileSync(s.duringChecks.bodyPath,"Changed later");
   if(s.duringChecks?.head) s.pr.headRefOid=s.duringChecks.head;
   if(s.duringChecks?.artifact) fs.appendFileSync(process.env.FIXTURE_REPO+"/.worktrees/pr-123/.local/"+s.duringChecks.artifact,"\\n# changed during checks\\n");
-  out([{name:"CI",bucket:s.gates,state:s.gates==="pass"?"SUCCESS":"FAILURE"}]);}
+  out([{name:s.requiredCheckName,bucket:s.gates,state:s.gates==="pass"?"SUCCESS":"FAILURE"}]);}
 else if(args[0]==="pr"&&args[1]==="view") {
   const fields=args[args.indexOf("--json")+1].split(",");
   if(fields.includes("headRefName")&&!fields.includes("headRefOid")) fail("missing live cleanup metadata");
@@ -543,6 +530,10 @@ else if(args[0]==="pr"&&args[1]==="view") {
   if(args.includes("--jq")) {const q=args[args.indexOf("--jq")+1];out(q===".state"?pr.state:q===".mergeCommit.oid"?pr.mergeCommit?.oid??"null":pr.url);}
   else out(pr);
 } else if((args[0]==="pr"&&args[1]==="merge")||restMerge||graphqlMerge) {
+  if(s.mode==="octopool-refusal") {
+    if(process.env.OCTOPOOL_DIAGNOSTICS!=="1"||!args.includes("--subject")) fail("missing protected merge publication inputs");
+    save();process.stderr.write(s.refusalCapture);process.exit(1);
+  }
   s.mutations++;
   if(s.quotaAt==="mutation") {s.quotaAt="observe";quota();}
   if(restMerge) {
@@ -620,7 +611,7 @@ else if(args[0]==="pr"&&args[1]==="view") {
   s.reads++;save();
   if(s.unavailable) fail("metadata unavailable");
   if(s.invalid) {out({data:{repository:{}}});process.exit(0);}
-  if(args.some(x=>x.includes("viewerMergeBodyText"))) {out({data:{repository:{pullRequest:{...s.pr,viewerMergeBodyText:s.previewBody}}}});}
+  if(args.some(x=>x.includes("viewerMergeBodyText"))) {out({data:{repository:{pullRequest:{...s.pr,viewerMergeBodyText:s.pooledMergeBlocked&&!args.includes("--include")?"Pooled viewer body":s.previewBody,...(args.some(x=>x.includes("viewerMergeHeadlineText"))?{viewerMergeHeadlineText:s.previewHeadline}:{})}}}});}
   else {
     if(!args.includes("Cache-Control: max-age=0")) fail("missing independent fresh merge observation");
     if(args.find(arg=>arg.startsWith("query="))!==${JSON.stringify(landingSnapshotQuery)}) fail("landing snapshot query is not supported by the shipped Octopool shim");
@@ -632,6 +623,7 @@ else if(args[0]==="pr"&&args[1]==="view") {
     if(step?.unavailable) fail("metadata unavailable");
     if(step?.invalid) {save();out({data:{repository:{}}});process.exit(0);}
     const {headRefName,...pr}=s.pr;if(s.drift&&s.reads%2===0) pr.baseRefName="changed";
+    if(s.pooledMergeBlocked&&!args.includes("--include")) pr.mergeStateStatus="BLOCKED";
     const repository={...s.repoGraphql,ref:{target:{oid:step?.reportedMain??main()}},pullRequest:pr};
     out({data:{repository}});
     if(step?.advanceAfterRead) advanceMain();
@@ -725,14 +717,21 @@ begin_pr_operation_validation_phase
 if [ -n "\${5:-}" ]; then
   merge_complete 123 "$5"
 else
-  merge_run 123 "\${1:-false}" "\${2:-}" "\${3:-}" "\${4:-}" "\${6:-}" "\${7:-false}"
+  merge_run 123 "\${1:-false}" "\${2:-}" "\${3:-}" "\${4:-}" "\${6:-}" "\${7:-false}" "\${8:-}"
 fi
 `,
     );
     chmodSync(shell, 0o755);
     const bin = join(root, "bin");
     mkdirSync(bin);
-    writeFileSync(join(bin, "gh"), '#!/bin/sh\nexec "$FIXTURE_NODE" "$FIXTURE_GH" direct "$@"\n', {
+    // The fixture isolates its environment; carry the test runner's Node 24
+    // shutdown policy through shell-launched helpers as well as the supervisor.
+    writeFileSync(
+      join(bin, "node"),
+      `#!/bin/sh\nexec "$FIXTURE_NODE" ${nodeArgs.map((arg) => JSON.stringify(arg)).join(" ")} "$@"\n`,
+      { mode: 0o755 },
+    );
+    writeFileSync(join(bin, "gh"), '#!/bin/sh\nexec node "$FIXTURE_GH" direct "$@"\n', {
       mode: 0o755,
     });
     const env = {
@@ -760,10 +759,12 @@ fi
       completionOid = "",
       legacyDirectory = "",
       cancelAuto = false,
+      refusalDirectory = "",
     ) => {
       const result = spawnSync(
         nodeExecutable,
         [
+          ...nodeArgs,
           join(scripts, "pr-lib/process-group-runner.mjs"),
           repo,
           shell,
@@ -774,6 +775,7 @@ fi
           completionOid,
           legacyDirectory,
           String(cancelAuto),
+          refusalDirectory,
         ],
         {
           cwd,
@@ -845,7 +847,7 @@ fi
       JSON.parse(
         execFileSync(
           nodeExecutable,
-          [gh, "path", "pr", "view", "123", "--json", "state,headRefOid,mergeCommit"],
+          [...nodeArgs, gh, "path", "pr", "view", "123", "--json", "state,headRefOid,mergeCommit"],
           { cwd: repo, env, encoding: "utf8" },
         ),
       );

@@ -45,8 +45,13 @@ read-only behavior: `users.github.*` requires `operator.read` plus the exact
 authenticated durable profile. That person can connect, poll, cancel,
 reconnect, or disconnect only their own account. These methods do not expose
 team secrets, mutate shared configuration, or grant OpenClaw write/admin scopes. System
-and per-agent GitHub changes remain `operator.admin`. Publication remains
-`operator.write` plus current session authorization. See
+and per-agent GitHub changes remain `operator.admin`.
+
+With `operator.sessions.write`, a requester can publish ordinary changes from
+sessions they created through the shared GitHub account. Workflow definition
+changes require the original requester's current full `operator.write`
+authority. Personal publication also requires `operator.write`. Every publication
+still requires current session authorization. See
 [GitHub connections](/concepts/user-model#github-connections).
 
 Unknown future `operator.*` scopes require an exact match unless the caller
@@ -106,8 +111,16 @@ plugin must return current authority for the person; another plugin's policy
 cannot satisfy the requirement. Configuration validation permits an unavailable
 plugin reference so the Gateway can still start for repair. Independent staff
 roles without this binding and the Gateway owner retain their existing access.
-Restore the required plugin to admit the bound role; removing or changing the
-binding is a role-policy change and follows the existing Gateway restart flow.
+Restore the required plugin to admit the bound role. Removing or changing the
+binding applies through the same live role-policy update described below.
+
+With live configuration reload enabled, edits to `gateway.roles` and
+`gateway.auth.identityScopes` apply without restarting the Gateway. Existing
+Gateway clients reconnect to receive the current scope ceiling, except for changes
+confined to model policies as described below. Pending
+handshakes and mutations recheck the policy before acquiring authority;
+already-admitted runs retain their normal completion and cancellation lifecycle,
+including cancellation when their original access-policy grant expires or is revoked.
 
 When roles are configured, identity-authenticated operator connections do not
 receive reusable device or bootstrap tokens: those tokens are not bound to a
@@ -169,10 +182,10 @@ an empty permitted result returns an error instead of widening access.
 
 With config reload enabled, edits confined to existing roles' `modelPolicy`
 settings apply when the config transaction commits, without restarting the
-Gateway. Role additions or removals, default-role changes, and changes to scopes,
-agents, sandbox, session access, or required access-policy plugins retain their
-restart behavior, including when combined with a model-policy edit. Disabling
-config reload leaves the current policy active until config application resumes.
+Gateway or reconnecting its clients. Other role changes hot-apply and reconnect
+clients with current authority, including when combined with a model-policy edit.
+Disabling config reload leaves the current policy active until config application
+resumes.
 
 The original role ceiling follows queued work and child runs. Accepted work must
 satisfy both its original model ceiling and the current policy. Removing one
@@ -248,8 +261,14 @@ reject grants without a matching durable identity when roles are enabled.
 Include `operator.admin` explicitly only when that role should retain
 administrative connection authority.
 
-Named roles apply only to connections with an authenticated durable
-profile. They organize collaboration within one trusted Gateway domain and do
+An administrator-attested [channel identity link](/concepts/user-model#channel-identity-links)
+also lets a sender inherit channel-owner authority from their effective role's
+`operator.admin` scope. This does not require an additional identity-scope grant.
+When roles are absent, channel ownership uses a matching administrative
+identity-scope grant instead. Connection scope grants and ceilings are unchanged.
+
+Named roles apply to authenticated durable profiles and their attested channel
+identities. They organize collaboration within one trusted Gateway domain and do
 not replace separate Gateways when hostile-tenant isolation is required.
 Diagnostic audit methods, including `audit.run.inspect`, remain shared-domain
 `operator.read` surfaces and are not filtered by session role. Likewise,

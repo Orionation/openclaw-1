@@ -52,11 +52,11 @@ export const CORE_FIELD_HELP: Record<string, string> = {
   "logging.audit":
     "Bounded metadata-only audit history for operator review. Run and tool records are enabled by default; message lifecycle metadata is a separate privacy-sensitive opt-in. The background writer is best-effort rather than a lossless compliance archive.",
   "logging.audit.enabled":
-    "Records new run, tool, and enabled message audit events. Default: true. Disabling event inserts does not immediately delete existing records; retained rows remain queryable until they expire.",
+    "Records new run, tool, and enabled message audit events. Default: true. Changes apply immediately; accepted writes finish and retained rows remain queryable until they expire.",
   "logging.audit.executionIdentity":
-    "Retains bounded execution-identity attribution for exact-run inspection. Default: false. Requires logging.audit.enabled; restart the Gateway after changing it.",
+    "Retains bounded execution-identity attribution for exact-run inspection. Default: false. Requires logging.audit.enabled and applies to newly admitted runs; existing contexts remain unchanged.",
   "logging.audit.messages":
-    'Controls content-free message lifecycle records: "off" (default), "direct" for known direct conversations only, or "all" for direct, group, channel, and unknown conversation kinds. Both logging.audit.enabled and logging.audit.messages are startup-scoped; restart the Gateway after changing either setting.',
+    'Controls content-free message lifecycle records: "off" (default), "direct" for known direct conversations only, or "all" for direct, group, channel, and unknown conversation kinds. Requires logging.audit.enabled. Changes apply to subsequent lifecycle events.',
   diagnostics:
     "Diagnostics controls for targeted tracing, telemetry export, and cache inspection during debugging. Keep baseline diagnostics minimal in production and enable deeper signals only when investigating issues.",
   "diagnostics.otel":
@@ -111,7 +111,7 @@ export const CORE_FIELD_HELP: Record<string, string> = {
   "gateway.terminal":
     "Operator terminal served to Control UI and mobile clients: a PTY-backed shell on the gateway host, restricted to admin-scope operator sessions. It starts in the target agent's workspace and is refused for fully-sandboxed agents (sandbox.mode 'all') rather than handing back an unconfined host shell.",
   "gateway.terminal.enabled":
-    "Enables the operator terminal for admin-scope clients (default: true). This exposes a browser/mobile shell with the gateway process environment; set false to opt out on deployments where admin operators should not get a host shell. Changing this restarts the gateway so connected clients reload with the correct terminal availability and content-security policy.",
+    "Enables the operator terminal for admin-scope clients (default: true). This exposes a browser/mobile shell with the gateway process environment; set false to opt out on deployments where admin operators should not get a host shell. Changes apply without restarting the Gateway.",
   "gateway.terminal.shell":
     "Shell executable the operator terminal launches. Leave unset to use the host login shell ($SHELL on Unix, %ComSpec% on Windows), or pin an explicit interpreter for a consistent operator environment.",
   "gateway.terminal.detachedSessionTimeoutSeconds":
@@ -159,7 +159,7 @@ export const CORE_FIELD_HELP: Record<string, string> = {
   "gateway.roles.definitions.*.agents":
     'Agents available when this role creates sessions or starts runs: set "*" to allow every agent, list agent IDs to allow only those agents, or use an empty list to disable both.',
   "gateway.roles.definitions.*.modelPolicy":
-    "Optional model ceiling for this role's requests and descendants. An empty object allows only the source agent's configured primary and fallback models; omitting the policy leaves model access unchanged. Model aliases resolve before enforcement, and denied models cannot be used by retries or fallbacks. With config reload enabled, changes confined to existing roles' model policies apply when committed without restarting permitted work. Other role changes retain their restart requirement.",
+    "Optional model ceiling for this role's requests and descendants. An empty object allows only the source agent's configured primary and fallback models; omitting the policy leaves model access unchanged. Model aliases resolve before enforcement, and denied models cannot be used by retries or fallbacks. With config reload enabled, changes confined to existing roles' model policies apply when committed without restarting permitted work. Other role changes hot-apply and reconnect clients with current authority.",
   "gateway.roles.definitions.*.modelPolicy.sourceAgent":
     "Agent whose primary, fallbacks, and model aliases supply this role's model policy. Defaults to the configured system/default agent or the sole agent. Set this explicitly when a multi-agent Gateway has no ambient owner.",
   "gateway.roles.definitions.*.modelPolicy.allow":

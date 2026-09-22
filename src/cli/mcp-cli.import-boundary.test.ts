@@ -45,6 +45,7 @@ async function runImportBoundaryChild(forbidden: RegExp, workload: string) {
         // state.env inherits Vitest and operator flags; only fixture paths cross this boundary.
         env: {
           PATH: process.env.PATH,
+          ESBUILD_WORKER_THREADS: process.env.ESBUILD_WORKER_THREADS,
           ...state.envVars,
           TMPDIR: state.root,
           TMP: state.root,

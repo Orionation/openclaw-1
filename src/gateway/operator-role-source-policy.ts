@@ -13,6 +13,17 @@ export function sourceRolePolicy(role: GatewayOperatorRoleDefinition | undefined
   return sourcePolicy;
 }
 
+export function sourceRolePolicies(roles: GatewayOperatorRolesConfig | undefined) {
+  return roles
+    ? {
+        ...roles,
+        definitions: Object.fromEntries(
+          Object.entries(roles.definitions).map(([name, role]) => [name, sourceRolePolicy(role)]),
+        ),
+      }
+    : undefined;
+}
+
 /** Compare role keys as record keys; administrator-chosen names may contain dots. */
 export function haveSameOperatorRoleSourcePolicies(
   previous: GatewayOperatorRolesConfig | undefined,
@@ -21,11 +32,5 @@ export function haveSameOperatorRoleSourcePolicies(
   if (!previous || !next) {
     return false;
   }
-  const sourcePolicies = (roles: GatewayOperatorRolesConfig) => ({
-    ...roles,
-    definitions: Object.fromEntries(
-      Object.entries(roles.definitions).map(([name, role]) => [name, sourceRolePolicy(role)]),
-    ),
-  });
-  return isDeepStrictEqual(sourcePolicies(previous), sourcePolicies(next));
+  return isDeepStrictEqual(sourceRolePolicies(previous), sourceRolePolicies(next));
 }
