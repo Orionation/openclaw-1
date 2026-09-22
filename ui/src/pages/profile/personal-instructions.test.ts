@@ -200,6 +200,36 @@ it("follows the global Settings agent without a second selector or leaking unsav
   expect(request.mock.calls.some(([method]) => method === "users.personalFile.set")).toBe(false);
 });
 
+it("drops a cached draft after undoing back to the saved content", async () => {
+  const request = vi
+    .fn()
+    .mockResolvedValueOnce(file)
+    .mockResolvedValueOnce({ ...file, agentId: "other", content: "Other instructions" })
+    .mockResolvedValueOnce({ ...file, agentId: "other", content: "Other instructions" })
+    .mockResolvedValueOnce(file);
+  const { element, selection } = mount(request);
+  await settle(element);
+  await input(element, "Unsaved main edit");
+  selection.set("other");
+  await settle(element);
+  selection.set("main");
+  await settle(element);
+  expect(element.querySelector("textarea")?.value).toBe("Unsaved main edit");
+  await input(element, file.content);
+  selection.set("other");
+  await settle(element);
+  selection.set("main");
+  await settle(element);
+  expect(element.querySelector("textarea")?.value).toBe(file.content);
+  expect(element.textContent).not.toContain("Unsaved changes");
+  expect(request.mock.calls.map(([, params]) => params)).toEqual([
+    { agentId: "main" },
+    { agentId: "other" },
+    { agentId: "other" },
+    { agentId: "main" },
+  ]);
+});
+
 it("never restores a former person's cached draft after an account change", async () => {
   const request = vi
     .fn()

@@ -105,6 +105,8 @@ export class PersonalInstructions extends OpenClawLightDomElement {
     if (agentChanged) {
       if (this.dirty && this.file) {
         this.drafts.set(this.agentId, { file: this.file, content: this.draft });
+      } else {
+        this.drafts.delete(this.agentId);
       }
       this.generation += 1;
       this.busy = null;
@@ -112,6 +114,7 @@ export class PersonalInstructions extends OpenClawLightDomElement {
       this.saved = false;
       this.agentId = nextAgentId;
       const pending = this.drafts.get(nextAgentId);
+      this.drafts.delete(nextAgentId);
       this.file = pending?.file ?? null;
       this.draft = pending?.content ?? "";
     }
