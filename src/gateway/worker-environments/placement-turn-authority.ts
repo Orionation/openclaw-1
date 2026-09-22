@@ -8,7 +8,6 @@ import {
   requireOpenClawStateDatabaseIdentity,
 } from "../../state/openclaw-state-db-cache.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
-import type { WorkerSessionPlacementProjection } from "./placement-read-projection.types.js";
 import {
   isCurrentPlacementTurnClaim,
   required,
@@ -179,7 +178,9 @@ export function publishPlacementTurnClaimCleared(db: DatabaseSync, sessionId: st
 export async function preparePlacementTurnClaimAuthority(
   pathname: string,
   requestedClaim: WorkerSessionTurnClaim,
-  read: (sessionIds: readonly string[]) => Promise<WorkerSessionPlacementProjection>,
+  read: (
+    sessionIds: readonly string[],
+  ) => Promise<{ placements: ReadonlyMap<string, WorkerSessionTurnClaimFacts> }>,
 ): Promise<PlacementTurnClaimAuthority> {
   const context = captureOpenClawStateWorkerContext({ path: pathname });
   const owner = ownerFor(context.admission.identity);
