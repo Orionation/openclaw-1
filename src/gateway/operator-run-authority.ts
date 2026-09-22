@@ -57,9 +57,9 @@ export function captureGatewayOperatorRunAuthority(params: {
   // authenticated user subject. Capture only the real, handshake-attested ingress:
   // an autonomous/synthetic system caller must not acquire the owner profile.
   const authenticatedOwner =
+    client?.internal?.authenticatedOperator === true &&
     (actor === undefined || actor.kind === "system") &&
-    client?.connect.role === "operator" &&
-    client.internal?.authenticatedOperator === true &&
+    client.connect.role === "operator" &&
     Boolean(client.connId) &&
     !client.invalidated &&
     !client.connectionSignal?.aborted &&
