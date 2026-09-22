@@ -451,8 +451,15 @@ export function registerGitRuntimeStagingTests(
   it.each(["validation", "runtime staging"])(
     "leaves the old runtime serving when candidate %s fails",
     async (failurePoint) => {
-      const { root, beforeSha, isStopped, advanceRemote, git, update, expectNoRuntimeStagingPaths } =
-        getFixture();
+      const {
+        root,
+        beforeSha,
+        isStopped,
+        advanceRemote,
+        git,
+        update,
+        expectNoRuntimeStagingPaths,
+      } = getFixture();
       await advanceRemote();
       const failure = new Error("candidate canary failed");
       const onStepComplete = vi.fn();
