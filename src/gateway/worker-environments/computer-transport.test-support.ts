@@ -3,7 +3,10 @@ import { vi } from "vitest";
 import { GATEWAY_CLIENT_IDS } from "../../../packages/gateway-protocol/src/client-info.js";
 import { createOperationalRunInstanceRef } from "../../agents/admitted-run-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { claimAgentRunDelegatedAuthority } from "../../infra/agent-run-registry.js";
+import {
+  claimAgentRunDelegatedAuthority,
+  validateAgentRunDelegatedAuthority,
+} from "../../infra/agent-run-registry.js";
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../../infra/node-runner-inventory.js";
 import type { ComputerUseCapabilityDescriptor } from "../../plugins/computer-use-contract.js";
 import { createPluginRecord } from "../../plugins/loader-records.js";
@@ -14,7 +17,6 @@ import {
   NodeWorkerComputerCloseParamsSchema,
   parseNodeWorkerComputerInput,
 } from "../../worker/node-computer-protocol.js";
-import { createAgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-identity-token.js";
 import { createContext, createNodeSession } from "../node-invoke-plugin-policy.test-helpers.js";
 import type {
   NodeWorkerSupervisorNodeProof,
@@ -147,9 +149,10 @@ export function createHarness(sharedHost = false, withPolicy = true) {
   const { context } = createContext({
     nodeSession: node,
     getRuntimeConfig: () => state.config,
-    validateAgentRuntimeApprovalAuthority: createAgentRuntimeApprovalAuthorityValidator({
-      validateTurnClaim: (candidate) => isCurrentPlacementTurnClaim(state.placement, candidate),
-    }),
+    validateAgentRuntimeApprovalAuthority: ({ delegatedAuthority }) =>
+      validateAgentRunDelegatedAuthority(delegatedAuthority) &&
+      (delegatedAuthority.kind === "local" ||
+        isCurrentPlacementTurnClaim(state.placement, delegatedAuthority.turnClaim)),
   });
   const nativeExecutionIds: string[] = [];
   const publicInvoke = vi.fn<NodeRegistry["invoke"]>(async (invocation) => {

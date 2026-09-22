@@ -250,6 +250,18 @@ export type WorkerSessionPlacementRecord =
   | ReclaimedPlacementRecord
   | FailedPlacementRecord;
 
+export type WorkerSessionTurnClaimFacts = Pick<
+  WorkerSessionPlacementRecord,
+  | "sessionId"
+  | "agentId"
+  | "sessionKey"
+  | "state"
+  | "executionMode"
+  | "environmentId"
+  | "activeOwnerEpoch"
+  | "turnClaim"
+>;
+
 export function reportPlacementTransition(
   observer: ((placement: WorkerSessionPlacementRecord) => void) | undefined,
   placement: WorkerSessionPlacementRecord,
@@ -510,7 +522,7 @@ export function assertRecordShape(
 }
 
 export function isCurrentPlacementTurnClaim(
-  record: WorkerSessionPlacementRecord,
+  record: WorkerSessionTurnClaimFacts,
   claim: WorkerSessionTurnClaim,
 ): boolean {
   const persisted = record.turnClaim;

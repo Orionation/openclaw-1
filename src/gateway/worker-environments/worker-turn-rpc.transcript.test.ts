@@ -93,7 +93,7 @@ describe("worker transcript claim fences", () => {
       let replacement: WorkerSessionTurnClaim | undefined;
       try {
         if (scenario === "preparation") {
-          bindWorkerTurnOwner(store, claim, undefined, instance, target, () => {}, prepare);
+          await bindWorkerTurnOwner(store, claim, undefined, instance, target, () => {}, prepare);
         }
         await writerHeld.promise;
         const request = support.transcriptRequest(identity, "queued before claim closure");

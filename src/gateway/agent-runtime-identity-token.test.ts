@@ -84,10 +84,10 @@ async function importRuntimeTokenModule(): Promise<
 }
 
 function validateDelegatedAuthority(
-  runtimeToken: typeof import("./agent-runtime-identity-token.js"),
+  approvalAuthority: typeof import("./agent-runtime-approval-authority.js"),
   authority: import("./agent-runtime-identity-token.js").AgentRuntimeDelegatedAuthority,
 ): boolean {
-  return runtimeToken.createAgentRuntimeApprovalAuthorityValidator()({
+  return approvalAuthority.createAgentRuntimeApprovalAuthorityValidator()({
     kind: "agentRuntime",
     agentId: "test",
     sessionKey: "agent:test:test",
@@ -128,6 +128,7 @@ describe("agent runtime identity token", () => {
     async (mode) => {
       useTempHome();
       const runtimeToken = await importRuntimeTokenModule();
+      const approvalAuthority = await import("./agent-runtime-approval-authority.js");
       const first = operationalRun("run-lifecycle");
       const firstRun = first.operationalRunInstance;
       const copied = await createIdentity(runtimeToken, mode, {
@@ -136,20 +137,20 @@ describe("agent runtime identity token", () => {
         operationalRunInstance: firstRun,
       });
       expect(copied).toBeDefined();
-      expect(copied && validateDelegatedAuthority(runtimeToken, copied.delegatedAuthority)).toBe(
-        true,
-      );
+      expect(
+        copied && validateDelegatedAuthority(approvalAuthority, copied.delegatedAuthority),
+      ).toBe(true);
 
       releaseAgentRunDelegatedAuthority(first.delegatedAuthority);
-      expect(copied && validateDelegatedAuthority(runtimeToken, copied.delegatedAuthority)).toBe(
-        false,
-      );
+      expect(
+        copied && validateDelegatedAuthority(approvalAuthority, copied.delegatedAuthority),
+      ).toBe(false);
 
       const replacement = { instanceId: "instance-replacement", runId: firstRun.runId };
       claimAgentRunDelegatedAuthority(replacement);
-      expect(copied && validateDelegatedAuthority(runtimeToken, copied.delegatedAuthority)).toBe(
-        false,
-      );
+      expect(
+        copied && validateDelegatedAuthority(approvalAuthority, copied.delegatedAuthority),
+      ).toBe(false);
 
       const replacementIdentity = await createIdentity(runtimeToken, mode, {
         agentId: "main",
@@ -158,13 +159,13 @@ describe("agent runtime identity token", () => {
       });
       expect(
         replacementIdentity &&
-          validateDelegatedAuthority(runtimeToken, replacementIdentity.delegatedAuthority),
+          validateDelegatedAuthority(approvalAuthority, replacementIdentity.delegatedAuthority),
       ).toBe(true);
 
       rotateAgentRunRegistryLifecycleGeneration();
       expect(
         replacementIdentity &&
-          validateDelegatedAuthority(runtimeToken, replacementIdentity.delegatedAuthority),
+          validateDelegatedAuthority(approvalAuthority, replacementIdentity.delegatedAuthority),
       ).toBe(false);
     },
   );

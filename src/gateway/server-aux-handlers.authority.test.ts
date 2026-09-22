@@ -14,7 +14,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
-import { createAgentRuntimeApprovalAuthorityValidator } from "./agent-runtime-identity-token.js";
+import { createAgentRuntimeApprovalAuthorityValidator } from "./agent-runtime-approval-authority.js";
 import { ApprovalObserverClosedError } from "./exec-approval-lifecycle.js";
 import { installTestApprovalClock } from "./exec-approval-manager.test-support.js";
 import { getOperatorApprovalDetailed } from "./operator-approval-store.js";
@@ -23,6 +23,7 @@ import { SharedGatewaySessionGenerationState } from "./server-shared-auth-genera
 import { createTestRuntimeSecretsActivator } from "./server-startup-config.test-support.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 import { seedAttachedPlacementEnvironment } from "./worker-environments/placement-test-fixtures.js";
+import { bindWorkerTurnOwner } from "./worker-environments/placement-turn-claim-events.js";
 
 type GatewayAux = ReturnType<typeof createGatewayAuxHandlers>;
 type GatewayAuxParams = Parameters<typeof createGatewayAuxHandlers>[0];
@@ -452,6 +453,14 @@ describe("gateway auxiliary authority lifecycle", () => {
       },
     });
     const authority = { kind: "worker" as const, ...runAuthority, turnClaim };
+    await bindWorkerTurnOwner(
+      placements,
+      turnClaim,
+      undefined,
+      operationalRunInstance,
+      identity,
+      () => {},
+    );
     const validateAuthority = createAgentRuntimeApprovalAuthorityValidator(placements);
     const lifecycle = vi.fn();
     const gatewayAux = createAuthorityHarness({
