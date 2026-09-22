@@ -229,17 +229,13 @@ export class PersonalInstructions extends OpenClawLightDomElement {
                   ${
                     this.file
                       ? html`
-                          <label
-                            class="personal-instructions__label"
-                            for="personal-instructions-content"
-                            >${t("profilePage.personalInstructions.title")}</label
-                          >
                           <textarea
                             id="personal-instructions-content"
                             class="settings-input personal-instructions__editor"
                             rows="7"
                             .value=${this.draft}
                             ?disabled=${this.busy !== null}
+                            aria-label=${t("profilePage.personalInstructions.title")}
                             aria-describedby="personal-instructions-guidance"
                             @input=${(event: Event) => {
                               if (!(event.currentTarget instanceof HTMLTextAreaElement)) {

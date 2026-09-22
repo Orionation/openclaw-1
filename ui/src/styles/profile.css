@@ -86,10 +86,6 @@
   padding: var(--space-4);
 }
 
-.personal-instructions__label {
-  font-weight: 600;
-}
-
 .personal-instructions__editor {
   width: 100%;
   max-width: none;

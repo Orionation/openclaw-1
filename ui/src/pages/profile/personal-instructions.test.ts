@@ -126,6 +126,18 @@ it("loads and saves only the signed-in personal file with operator.read", async 
   expect(element.textContent).toContain("Saved");
 });
 
+it("shows one section heading without repeating it inside the editor card", async () => {
+  const { element } = mount(vi.fn().mockResolvedValue(file));
+  await settle(element);
+  const heading = element.querySelector(".settings-section__heading");
+  const editor = element.querySelector("textarea");
+  expect(heading?.textContent?.trim()).toBe("Personal instructions");
+  expect(element.querySelectorAll(".settings-section__heading")).toHaveLength(1);
+  expect(element.querySelector(".personal-instructions label")).toBeNull();
+  expect(editor?.getAttribute("aria-label")).toBe("Personal instructions");
+  expect(editor?.getAttribute("aria-describedby")).toBe("personal-instructions-guidance");
+});
+
 it("never loads a personal file without a signed-in profile", async () => {
   const request = vi.fn();
   const { element } = mount(request, false);
