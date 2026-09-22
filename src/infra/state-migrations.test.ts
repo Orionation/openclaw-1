@@ -19,7 +19,6 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { writeSessionEntry } from "../config/sessions/session-accessor.sqlite-entry-store.js";
-import type { SessionAcpMeta } from "../config/sessions/types.js";
 import { readMemoryHostEventRecords } from "../memory-host-sdk/events.js";
 import { loadNodeHostConfig } from "../node-host/config.js";
 import { readChannelPairingStateSnapshot } from "../pairing/pairing-store-sqlite.test-helpers.js";
@@ -70,6 +69,7 @@ import {
   migrateLegacyCurrentConversationBindings,
   migrateLegacyPluginBindingApprovals,
 } from "./state-migrations.runtime-state.js";
+import { createLegacyAcpSessionEntry } from "./state-migrations.session-store.test-support.js";
 import {
   resetAutoMigrateLegacyStateDirForTest,
   resetAutoMigrateLegacyTaskStateSidecarsForTest,
@@ -730,27 +730,6 @@ async function createLegacyAuditLedger(stateDir: string): Promise<string> {
     db.close();
   }
   return databasePath;
-}
-
-function createLegacyAcpSessionEntry(
-  sessionId: string,
-  updatedAt: number,
-  agent: string,
-  runtimeSessionName: string,
-  lastActivityAt: number,
-) {
-  return {
-    sessionId,
-    updatedAt,
-    acp: {
-      backend: "test",
-      agent,
-      runtimeSessionName,
-      mode: "persistent",
-      state: "idle",
-      lastActivityAt,
-    } satisfies SessionAcpMeta,
-  };
 }
 
 async function createLegacyStateFixture(params?: { includePreKey?: boolean }) {
@@ -2786,6 +2765,7 @@ describe("state migrations", () => {
       readAcpSessionMetaForEntry({
         sessionKey: pendingKey,
         entry: { sessionId: pendingKey, lifecycleRevision: undefined },
+        agentId: "main",
         env,
       }),
     ).toBeUndefined();
@@ -3024,6 +3004,7 @@ describe("state migrations", () => {
         readAcpSessionMetaForEntry({
           sessionKey: canonicalKey,
           entry: { sessionId, lifecycleRevision: undefined },
+          agentId: "voice",
           env,
         })?.runtimeSessionName,
       ).toBe(runtimeSessionName);
@@ -3031,6 +3012,7 @@ describe("state migrations", () => {
         readAcpSessionMetaForEntry({
           sessionKey: legacyKey,
           entry: { sessionId, lifecycleRevision: undefined },
+          agentId: "voice",
           env,
         }),
       ).toBeUndefined();
@@ -3225,6 +3207,7 @@ describe("state migrations", () => {
       readAcpSessionMetaForEntry({
         sessionKey: pendingKey,
         entry: { lifecycleRevision: undefined },
+        agentId: "main",
         env,
       }),
     ).toBeUndefined();
@@ -3262,6 +3245,7 @@ describe("state migrations", () => {
       readAcpSessionMetaForEntry({
         sessionKey: pendingKey,
         entry: { lifecycleRevision: undefined },
+        agentId: "main",
         env,
       })?.runtimeSessionName,
     ).toBe("existing-runtime");
@@ -3338,6 +3322,7 @@ describe("state migrations", () => {
       readAcpSessionMetaForEntry({
         sessionKey: "agent:main:existing",
         entry: { sessionId: "existing-main", lifecycleRevision: undefined },
+        agentId: "main",
         env,
       })?.runtimeSessionName,
     ).toBe("existing-runtime");
@@ -3345,6 +3330,7 @@ describe("state migrations", () => {
       readAcpSessionMetaForEntry({
         sessionKey: "agent:voice:desk",
         entry: { sessionId: "voice-main", lifecycleRevision: undefined },
+        agentId: "voice",
         env,
       })?.runtimeSessionName,
     ).toBe("voice-runtime");
@@ -3352,6 +3338,7 @@ describe("state migrations", () => {
       readAcpSessionMetaForEntry({
         sessionKey: "agent:voice:main",
         entry: { sessionId: "voice-main", lifecycleRevision: undefined },
+        agentId: "voice",
         env,
       }),
     ).toBeUndefined();
