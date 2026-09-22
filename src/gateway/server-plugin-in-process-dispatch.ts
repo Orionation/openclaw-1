@@ -27,14 +27,14 @@ import {
   throwIfGatewayDispatchAborted,
   unwrapGatewayMethodDispatchResponse,
 } from "./server-in-process-dispatch.js";
+import type { AgentRunRequest } from "./server-methods/agent-request-types.js";
+import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
+import type { GatewayContextResolver, GatewayRequestContext } from "./server-methods/types.js";
 import type {
   DispatchGatewayMethodInProcessOptions,
   OperatorToolGatewayAuthority,
   ResolvedInProcessGatewayDispatch,
-} from "./server-in-process-dispatch.types.js";
-import type { AgentRunRequest } from "./server-methods/agent-request-types.js";
-import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
-import type { GatewayContextResolver, GatewayRequestContext } from "./server-methods/types.js";
+} from "./server-plugin-in-process-dispatch.types.js";
 import { resolveInProcessGatewaySyntheticScopes } from "./server-plugin-in-process-scopes.js";
 import {
   createSyntheticPluginRuntimeClient,
