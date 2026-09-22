@@ -32,10 +32,7 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { resolveGatewayAuthPolicyGeneration } from "./auth-policy.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import { createChannelManager } from "./server-channels.js";
-import {
-  createContext as createGatewayTestContext,
-  createOperatorClient,
-} from "./server-plugin-in-process-dispatch.test-support.js";
+import { createContext as createGatewayTestContext } from "./server-plugin-in-process-dispatch.test-support.js";
 import {
   createDefaultGatewayReloadState,
   createDirectConfigWriteFixture,
@@ -114,8 +111,14 @@ it("commits model-only role changes without retiring permitted models or origina
     const connection = new AbortController();
     const close = vi.fn(() => connection.abort());
     const client = {
-      ...createOperatorWsClient({ socket: { close } }),
-      ...createOperatorClient({ profileId: profile.id, scopes: ["operator.write"] }),
+      ...createOperatorWsClient({ socket: { close }, scopes: ["operator.write"] }),
+      authenticatedUserProfile: {
+        profileId: profile.id,
+        displayName: null,
+        hasAvatar: false,
+        avatarRevision: "1",
+        updatedAt: 1,
+      },
       authPolicyGeneration: resolveGatewayAuthPolicyGeneration(initialConfig),
       connectionSignal: connection.signal,
     };
