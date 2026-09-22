@@ -2794,7 +2794,6 @@ export const en: TranslationMap & {
       title: "Personal instructions",
       description:
         "Tell this agent about you and how you like to work. This edits only your personal USER.md, not the shared workspace file.",
-      agent: "Agent",
       signIn:
         "Sign in with your personal profile to edit your instructions. This requires operator.read access.",
       noAgents: "No agents are available on this connection.",

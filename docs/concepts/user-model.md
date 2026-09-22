@@ -15,8 +15,8 @@ OpenClaw loads `USER.md` beside `MEMORY.md` at session start. It has a separate 
 
 ## Personal USER files on a shared Gateway
 
-Open **Settings → Profile → Personal instructions**, select an agent, and save
-your preferences. You can create or edit your own personal `USER.md` with an
+Open **Settings → Profile → Personal instructions**, choose an agent in the
+Settings sidebar’s existing agent selector, and save your preferences. You can create or edit your own personal `USER.md` with an
 authenticated profile and `operator.read`; administrator or general write access
 is not required. The editor always uses the signed-in person, not the owner of
 the currently open chat. It cannot edit another person’s file or shared defaults.

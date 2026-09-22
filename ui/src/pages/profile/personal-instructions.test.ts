@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
+import { createAgentSelectionCapability } from "../../app/agent-selection.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
 import { i18n } from "../../i18n/index.ts";
 import { createApplicationContextProvider } from "../../test-helpers/application-context.ts";
@@ -44,8 +45,28 @@ function mount(request: GatewayBrowserClient["request"], signedIn = true) {
     },
   };
   const listeners = new Set<() => void>();
+  const agents: ApplicationContext["agents"] = {
+    ...base.agents,
+    state: {
+      ...base.agents.state,
+      agentsList: {
+        defaultId: "main",
+        mainKey: "main",
+        scope: "per-sender",
+        agents: [
+          { id: "main", name: "Main" },
+          { id: "other", name: "Other" },
+        ],
+      },
+    },
+  };
+  const selection = createAgentSelectionCapability(base.gateway, agents, undefined, undefined, {
+    requireConfiguredAgent: true,
+  });
   const context: ApplicationContext = {
     ...base,
+    agents,
+    settingsAgentSelection: selection,
     gateway: {
       ...base.gateway,
       get snapshot() {
@@ -57,21 +78,6 @@ function mount(request: GatewayBrowserClient["request"], signedIn = true) {
         return () => listeners.delete(notify);
       },
     },
-    agents: {
-      ...base.agents,
-      state: {
-        ...base.agents.state,
-        agentsList: {
-          defaultId: "main",
-          mainKey: "main",
-          scope: "per-sender",
-          agents: [
-            { id: "main", name: "Main" },
-            { id: "other", name: "Other" },
-          ],
-        },
-      },
-    },
   };
   const provider = createApplicationContextProvider(context);
   const element = document.createElement(tag) as PersonalInstructions;
@@ -79,6 +85,7 @@ function mount(request: GatewayBrowserClient["request"], signedIn = true) {
   document.body.append(provider);
   return {
     element,
+    selection,
     emit: (patch: Partial<ApplicationGatewaySnapshot>) => {
       snapshot = { ...snapshot, ...patch };
       listeners.forEach((listener) => listener());
@@ -172,29 +179,67 @@ it("preserves a conflicting draft, confirms reload, and keeps it when reload fai
   expect(element.querySelector("textarea")?.value).toBe("External edit");
 });
 
-it("asks before changing agents and never sends a dirty draft to the new agent", async () => {
+it("follows the global Settings agent without a second selector or leaking unsaved drafts", async () => {
   const request = vi
     .fn()
     .mockResolvedValueOnce(file)
     .mockResolvedValueOnce({ ...file, agentId: "other", content: "Other instructions" });
-  const { element } = mount(request);
+  const { element, selection } = mount(request);
   await settle(element);
+  expect(element.querySelector("select")).toBeNull();
   await input(element, "Main draft");
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-  const select = element.querySelector("select")!;
-  select.value = "other";
-  select.dispatchEvent(new Event("change"));
-  await settle(element);
-  expect(request).toHaveBeenCalledTimes(1);
-  expect(select.value).toBe("main");
-  expect(element.querySelector("textarea")?.value).toBe("Main draft");
-  confirm.mockReturnValue(true);
-  select.value = "other";
-  select.dispatchEvent(new Event("change"));
+  selection.set("other");
   await settle(element);
   expect(request).toHaveBeenLastCalledWith("users.personalFile.get", { agentId: "other" });
   expect(element.querySelector("textarea")?.value).toBe("Other instructions");
+  selection.set("main");
+  await settle(element);
+  expect(element.querySelector("textarea")?.value).toBe("Main draft");
+  expect(element.textContent).toContain("Unsaved changes");
+  expect(request).toHaveBeenCalledTimes(2);
   expect(request.mock.calls.some(([method]) => method === "users.personalFile.set")).toBe(false);
+});
+
+it("never restores a former person's cached draft after an account change", async () => {
+  const request = vi
+    .fn()
+    .mockResolvedValueOnce(file)
+    .mockResolvedValueOnce({ ...file, agentId: "other", content: "Other agent" });
+  const { element, selection, emit } = mount(request);
+  await settle(element);
+  await input(element, "Former person's draft");
+  selection.set("other");
+  await settle(element);
+  emit({
+    selfUser: { id: "profile-2" },
+    client: createTestGatewayClient(
+      vi.fn().mockResolvedValue({
+        ...file,
+        profileId: "profile-2",
+        agentId: "other",
+        content: "New person",
+      }),
+    ),
+  });
+  await settle(element);
+  selection.set("main");
+  await settle(element);
+  expect(element.querySelector("textarea")?.value).not.toBe("Former person's draft");
+});
+
+it("ignores a late read for a previously selected agent", async () => {
+  const old = createDeferred<typeof file>();
+  const request = vi
+    .fn()
+    .mockReturnValueOnce(old.promise)
+    .mockResolvedValueOnce({ ...file, agentId: "other", content: "Other instructions" });
+  const { element, selection } = mount(request);
+  await settle(element);
+  selection.set("other");
+  await settle(element);
+  old.resolve(file);
+  await settle(element);
+  expect(element.querySelector("textarea")?.value).toBe("Other instructions");
 });
 
 it("ignores an old connection read after the current profile changes", async () => {
@@ -220,7 +265,9 @@ it("retains the unsettled draft but ignores an old save completion after reconne
   await input(element, "Old draft");
   button(element, "Save").click();
   await settle(element);
-  expect(element.querySelector("select")?.disabled).toBe(true);
+  expect(
+    element.querySelector<HTMLButtonElement>(".personal-instructions__actions button")?.disabled,
+  ).toBe(true);
   emit({
     client: createTestGatewayClient(
       vi.fn().mockResolvedValue({ ...file, content: "Current connection" }),
@@ -343,7 +390,16 @@ it("keeps the actual Profile editor mounted across an offline transition", async
       },
     },
   };
-  const page = mountProfilePage(context);
+  const page = mountProfilePage({
+    ...context,
+    settingsAgentSelection: createAgentSelectionCapability(
+      context.gateway,
+      context.agents,
+      undefined,
+      undefined,
+      { requireConfiguredAgent: true },
+    ),
+  });
   await page.updateComplete;
   const editor = page.querySelector<PersonalInstructions>("openclaw-personal-instructions")!;
   await settle(editor);

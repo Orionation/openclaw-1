@@ -12,7 +12,6 @@ import { renderSettingsEmpty, renderSettingsSection } from "../../components/set
 import { t } from "../../i18n/index.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
-import { renderSettingsSelectRow } from "../config/settings-select-row.ts";
 import { PROFILE_SETTINGS_TARGET_IDS } from "../config/settings-targets.ts";
 
 export class PersonalInstructions extends OpenClawLightDomElement {
@@ -32,12 +31,14 @@ export class PersonalInstructions extends OpenClawLightDomElement {
   private available = false;
   private generation = 0;
   private subscriptions: Array<() => void> = [];
+  private drafts = new Map<string, { file: UsersPersonalFileGetResult; content: string }>();
 
   override connectedCallback() {
     super.connectedCallback();
     this.subscriptions = [
       this.context.gateway.subscribe(() => this.syncContext()),
       this.context.agents.subscribe(() => this.syncContext()),
+      this.context.settingsAgentSelection.subscribe(() => this.syncContext()),
     ];
     this.syncContext();
     void this.context.agents.ensureList();
@@ -93,17 +94,28 @@ export class PersonalInstructions extends OpenClawLightDomElement {
         this.file = null;
         this.draft = "";
         this.agentId = "";
+        this.drafts.clear();
       }
     }
-    // Never retarget an existing editor if its agent disappears from the catalog.
-    let selectedAgent = false;
-    if (!this.agentId && this.agents.length) {
-      const defaultId = this.context.agents.state.agentsList?.defaultId;
-      this.agentId =
-        this.agents.find((agent) => agent.id === defaultId)?.id ?? this.agents[0]?.id ?? "";
-      selectedAgent = true;
+    // Settings owns the target. Keep unsaved drafts scoped to this person,
+    // Gateway and agent rather than blocking or reverting the global selector.
+    const selectedId = this.context.settingsAgentSelection.state.selectedId;
+    const nextAgentId = this.agents.some((agent) => agent.id === selectedId) ? selectedId! : "";
+    const agentChanged = nextAgentId !== this.agentId;
+    if (agentChanged) {
+      if (this.dirty && this.file) {
+        this.drafts.set(this.agentId, { file: this.file, content: this.draft });
+      }
+      this.generation += 1;
+      this.busy = null;
+      this.error = null;
+      this.saved = false;
+      this.agentId = nextAgentId;
+      const pending = this.drafts.get(nextAgentId);
+      this.file = pending?.file ?? null;
+      this.draft = pending?.content ?? "";
     }
-    if (this.available && this.agentId && !this.dirty && (sourceChanged || selectedAgent)) {
+    if (this.available && this.agentId && !this.dirty && (sourceChanged || agentChanged)) {
       void this.load();
     }
     this.requestUpdate();
@@ -132,6 +144,7 @@ export class PersonalInstructions extends OpenClawLightDomElement {
       }
       this.file = file;
       this.draft = file.content;
+      this.drafts.delete(agentId);
     } catch (error) {
       if (generation === this.generation) {
         this.error = formatUiError(error);
@@ -152,6 +165,7 @@ export class PersonalInstructions extends OpenClawLightDomElement {
       !this.available ||
       this.busy ||
       !this.dirty ||
+      file.agentId !== this.agentId ||
       this.draft.length > 4000 ||
       !this.agents.some((agent) => agent.id === file.agentId)
     ) {
@@ -176,6 +190,7 @@ export class PersonalInstructions extends OpenClawLightDomElement {
       }
       this.file = result;
       this.draft = result.content;
+      this.drafts.delete(result.agentId);
       this.saved = true;
     } catch (error) {
       if (generation === this.generation) {
@@ -207,38 +222,6 @@ export class PersonalInstructions extends OpenClawLightDomElement {
           : !this.agents.length
             ? renderSettingsEmpty(t("profilePage.personalInstructions.noAgents"))
             : html`
-                ${renderSettingsSelectRow({
-                  title: t("profilePage.personalInstructions.agent"),
-                  value: this.agentId,
-                  options: this.agents.map((agent) => ({
-                    value: agent.id,
-                    label: agent.name || agent.id,
-                  })),
-                  disabled: this.busy !== null,
-                  onChange: (agentId) => {
-                    if (
-                      agentId === this.agentId ||
-                      !this.agents.some((agent) => agent.id === agentId)
-                    ) {
-                      return;
-                    }
-                    if (
-                      this.dirty &&
-                      !window.confirm(t("profilePage.personalInstructions.discard"))
-                    ) {
-                      const select = this.querySelector("select");
-                      if (select) {
-                        select.value = this.agentId;
-                      }
-                      return;
-                    }
-                    this.generation += 1;
-                    this.agentId = agentId;
-                    this.file = null;
-                    this.draft = "";
-                    void this.load();
-                  },
-                })}
                 <div class="personal-instructions">
                   ${
                     this.file
