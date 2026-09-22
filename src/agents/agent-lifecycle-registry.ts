@@ -239,7 +239,7 @@ export function isAgentDeletionBlocked(
   agentId: string,
   options: OpenClawStateDatabaseOptions = {},
 ): boolean {
-  return Boolean(readAgentDeletionJournal(normalizeAgentId(agentId), options));
+  return Boolean(readAgentDeletionJournal(normalizeAgentId(agentId), options, "runtime"));
 }
 
 /** Captures the exact durable incarnation of an existing, deletion-safe agent. */

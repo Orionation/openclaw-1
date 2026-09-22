@@ -848,7 +848,7 @@ async function inspectOrMigrateTarget(params: {
   if (retainedImport) {
     countRetainedSessionSources(retained, records, report);
   } else if (params.mode === "import") {
-    await importLegacySessionRecords(params.target, records, report);
+    await importLegacySessionRecords(params, records, report);
   } else if (params.mode === "dry-run") {
     for (const record of records) {
       countLegacyTranscript(record, report);
@@ -1025,7 +1025,7 @@ async function inspectOrMigrateTarget(params: {
 }
 
 async function importLegacySessionRecords(
-  target: SessionStoreTarget,
+  { target, env }: { target: SessionStoreTarget; env: NodeJS.ProcessEnv },
   records: readonly LegacySessionRecord[],
   report: DoctorSessionSqliteTargetReport,
 ): Promise<void> {
@@ -1043,7 +1043,7 @@ async function importLegacySessionRecords(
         importedTranscriptSources,
         existingSnapshot.ok ? existingSnapshot.snapshot : undefined,
       );
-      return prepared ? [{ ...prepared, record }] : [];
+      return prepared ? [{ ...prepared, params: { ...prepared.params, env }, record }] : [];
     });
     const imported = await importSqliteSessionRowsBatch(pending.map((entry) => entry.params));
     for (const [index, result] of imported.entries()) {
