@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
@@ -9,6 +10,7 @@ import { loadPersonalUserBootstrapFile } from "../../agents/workspace-personal-b
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { createGatewayMethodRegistry } from "../methods/registry.js";
+import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import type { GatewayClient } from "./client-types.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 import { usersPersonalFileHandlers } from "./users-personal-file.js";
@@ -106,11 +108,14 @@ const save = (content: string, expectedHash: string | null = null) =>
 const personalPath = () => path.join(workspace, "users", "alice", "USER.md");
 
 describe("personal USER.md self-service", () => {
-  function toolTurn(sessionKey = "agent:main:dashboard:someone-elses-project") {
+  function toolTurn(
+    sessionKey = "agent:main:dashboard:someone-elses-project",
+    scopes = ["operator.read"],
+  ) {
     let active = true;
     const authority = createAdmittedRunOperatorAuthority({
       profileId: "alice-alias",
-      scopes: ["operator.read"],
+      scopes,
       assertCurrent: () => {
         if (!active) {
           throw new Error("requester revoked");
@@ -154,13 +159,13 @@ describe("personal USER.md self-service", () => {
   }
 
   it.each([
-    "agent:main:main",
-    "agent:main:dashboard:foreign-owner",
-    "agent:main:dashboard:worktree",
+    { sessionKey: "agent:main:main", scopes: ["operator.read"] },
+    { sessionKey: "agent:main:dashboard:foreign-owner", scopes: ["operator.write"] },
+    { sessionKey: "agent:main:dashboard:worktree", scopes: ["operator.admin"] },
   ])(
-    "routes the actual chat tool from %s to the requester file, not the session/client owner",
-    async (sessionKey) => {
-      const { identity } = toolTurn(sessionKey);
+    "routes the actual chat tool from $sessionKey with $scopes to the requester file",
+    async ({ sessionKey, scopes }) => {
+      const { identity } = toolTurn(sessionKey, scopes);
       const tool = createPersonalInstructionsTool("main");
       const execute = (params: Record<string, unknown>) =>
         withGatewayToolCallerIdentity(identity, () =>
@@ -179,6 +184,111 @@ describe("personal USER.md self-service", () => {
       expect(await fs.readFile(path.join(workspace, "USER.md"), "utf8")).toBe("Shared defaults");
     },
   );
+
+  it.each(["shared-secret", "device-token"])(
+    "carries authenticated %s owner ingress through the chat tool and retires its source",
+    async (kind) => {
+      const { identity } = toolTurn();
+      const ingress: GatewayClient = {
+        ...client,
+        connId: "local-owner-connection",
+        connect: { ...client.connect, scopes: ["operator.write"] },
+        authenticatedUserProfile: {
+          ...client.authenticatedUserProfile!,
+          profileId: GATEWAY_OWNER_PROFILE_ID,
+        },
+        internal: {
+          authenticatedOperator: true,
+          ...(kind === "shared-secret" ? { operatorRoleActor: { kind: "system" as const } } : {}),
+        },
+      };
+      const captured = captureGatewayOperatorRunAuthority({
+        client: ingress,
+        context: identity.gatewayContextResolver(),
+        hasCurrentClientAuthority: () => true,
+      });
+      expect(captured).toBeDefined();
+      if (!captured) {
+        throw new Error("authenticated owner source missing");
+      }
+      try {
+        const tool = createPersonalInstructionsTool("main");
+        const call = (params: Record<string, unknown>) =>
+          withGatewayToolCallerIdentity(
+            { ...identity, operatorAuthority: captured.authority },
+            () => tool.execute("owner-call", params, controller.signal),
+          );
+        expect((await call({ action: "get" })).details).toMatchObject({
+          profileId: GATEWAY_OWNER_PROFILE_ID,
+          missing: true,
+        });
+        await call({ action: "set", content: "Owner preferences", expectedHash: null });
+        expect(
+          await fs.readFile(
+            path.join(workspace, "users", GATEWAY_OWNER_PROFILE_ID, "USER.md"),
+            "utf8",
+          ),
+        ).toBe("Owner preferences");
+        expect(await fs.readdir(path.join(workspace, "users"))).toEqual([GATEWAY_OWNER_PROFILE_ID]);
+        captured.release();
+        await expect(call({ action: "get" })).rejects.toThrow("no longer active");
+      } finally {
+        captured.release();
+      }
+    },
+  );
+
+  it.each(["unattested", "synthetic", "agent-tool", "unprofiled", "node", "invalidated"])(
+    "does not create owner authority for %s work",
+    (kind) => {
+      const { identity } = toolTurn();
+      const ingress: GatewayClient = {
+        ...client,
+        connId: "owner-source",
+        authenticatedUserProfile: {
+          ...client.authenticatedUserProfile!,
+          profileId: GATEWAY_OWNER_PROFILE_ID,
+        },
+        internal: { authenticatedOperator: true, operatorRoleActor: { kind: "system" } },
+      };
+      if (kind === "unattested") {
+        delete ingress.internal!.authenticatedOperator;
+      }
+      if (kind === "synthetic") {
+        ingress.internal!.syntheticClient = true;
+      }
+      if (kind === "agent-tool") {
+        ingress.internal!.agentToolCaller = { agentId: "main", sessionKey: "agent:main:main" };
+      }
+      if (kind === "unprofiled") {
+        delete ingress.authenticatedUserProfile;
+      }
+      if (kind === "node") {
+        ingress.connect = { ...ingress.connect, role: "node" };
+      }
+      if (kind === "invalidated") {
+        ingress.invalidated = true;
+      }
+      expect(
+        captureGatewayOperatorRunAuthority({
+          client: ingress,
+          context: identity.gatewayContextResolver(),
+        }),
+      ).toBeUndefined();
+    },
+  );
+
+  it("rejects a different source even when its profile matches", async () => {
+    const { identity } = toolTurn();
+    client.internal!.operatorRunAuthority = createAdmittedRunOperatorAuthority({
+      profileId: identity.operatorAuthority.profileId,
+      scopes: ["operator.read"],
+      assertCurrent: () => {},
+    });
+    expect((await withGatewayToolCallerIdentity(identity, () => save("Different source"))).ok).toBe(
+      false,
+    );
+  });
 
   it("rejects copied requester authority without its live admitted tool run", async () => {
     toolTurn();

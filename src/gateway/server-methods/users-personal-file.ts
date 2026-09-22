@@ -62,13 +62,19 @@ function preparePersonalFile(options: GatewayRequestHandlerOptions, requestedAge
       // copied onto a synthetic client. Only an exact live, host-admitted tool run
       // may use this narrow self-service exception. Other personal APIs stay unchanged.
       assertAdmittedRunOperatorAuthority(operatorAuthority);
+      const requesterAuthority = toolCaller?.operatorAuthority;
       if (
         client.internal?.syntheticClient !== true ||
-        toolCaller?.operatorAuthority !== operatorAuthority ||
+        !requesterAuthority?.source ||
+        requesterAuthority.source !== operatorAuthority.source ||
+        requesterAuthority.profileId !== operatorAuthority.profileId ||
         !assertToolCurrent
       ) {
         throw new PersonalFileAccessError("Personal instructions require an admitted user turn.");
       }
+      // Dispatch may issue a narrower grant. Bind by the opaque original source
+      // and subject, while retaining both the run and narrowed grant lifetimes.
+      assertAdmittedRunOperatorAuthority(requesterAuthority);
       assertToolCurrent();
       operatorAuthority.assertCurrent();
       id = operatorAuthority.profileId;

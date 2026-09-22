@@ -29,7 +29,9 @@ session owner, task directory, and model-supplied profile IDs never choose the
 write target. It reads the current file before saving with its content hash.
 Anonymous or autonomous runs without a live authenticated requester cannot use
 this exception. Normal tool policies still apply; general filesystem access is
-unchanged.
+unchanged. A token/password or device-token shared-owner login edits that shared
+owner profile’s file; use individual sign-in to keep different people’s files
+separate.
 
 Saves check the version you loaded. If another editor changes the file, keep a
 copy of your draft and reload before saving again. As with the shared workspace
