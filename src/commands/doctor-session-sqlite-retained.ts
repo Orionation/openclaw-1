@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { SessionStoreTarget } from "../config/sessions/targets.js";
+import {
+  resolveConfiguredAgentDatabaseTargets,
+  type SessionStoreTarget,
+} from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   prepareSessionSourceVerification,
@@ -32,6 +35,7 @@ import {
   readTranscriptFingerprint,
   resolveTargetSqlitePath,
 } from "../infra/session-sqlite-migration-readers.js";
+import { createRetainedAgentDatabaseMatcher } from "../state/agent-deletion-discovery.js";
 import { planSessionJsonlArchiveMove } from "./doctor-session-sqlite-archive.js";
 import { countLegacyTranscript } from "./doctor-session-sqlite-diagnostics.js";
 import type { LegacySessionRecord } from "./doctor-session-sqlite-discovery.js";
@@ -51,12 +55,30 @@ export function prepareRetainedSessionImport(
   issues: DoctorSessionSqliteIssue[],
 ) {
   const isSqliteStore = params.target.storePath.endsWith(".sqlite");
+  const sqlitePath = resolveTargetSqlitePath(params.target, params.env);
+  if (!isSqliteStore && (params.mode === "import" || params.mode === "recover")) {
+    const isHeld = createRetainedAgentDatabaseMatcher(
+      params.env,
+      () => resolveConfiguredAgentDatabaseTargets(params.cfg, { env: params.env }),
+      { kind: "legacy-database", readDatabasePaths: () => [sqlitePath] },
+    );
+    if (
+      isHeld(params.target.storePath, params.target.agentId) ||
+      isHeld(sqlitePath, params.target.agentId)
+    ) {
+      issues.push({
+        code: "plugin_migration_source_retained",
+        message: `Retained session sources skipped: store held for agent ${params.target.agentId} database ${sqlitePath}. Run openclaw doctor --fix for deletion-history repair and explicit restoration guidance.`,
+      });
+      return undefined;
+    }
+  }
   let retainedImport: DeferredPluginSessionImport | undefined;
   const sourceConflicts = new Map<string, string>();
   const sourceVerification = {
     ...prepareSessionSourceVerification({
       ...params,
-      sqlitePath: resolveTargetSqlitePath(params.target, params.env),
+      sqlitePath,
     }),
     allowMissingIndex: true,
     onSourceConflict: (sourcePath: string, artifactPath = sourcePath, error?: unknown) => {
