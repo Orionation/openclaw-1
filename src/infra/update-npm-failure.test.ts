@@ -97,7 +97,10 @@ describe("npm install failure reports", () => {
     ["ETARGET", "Check the configured npm registry"],
     ["ECONNRESET", "npm failure code: ECONNRESET"],
     ["PRIVATE_IDENTIFIER", "npm failure code: unknown"],
-  ])("bounds stdout diagnostics and classifies %s", async (code, guidance) => {
+  ])("retains whole stdout diagnostic lines and classifies %s", async (code, guidance) => {
+    const cause = "npm error install failed while preparing package";
+    const detail = "npm error retained detail after oversized lines";
+    const omitted = "npm error (20 lines omitted: exceed 200-byte diagnostic limit)";
     const step = await runStep({
       name: "package-install-omit-optional",
       argv: ["npm", "install", "-g", "openclaw"],
@@ -108,13 +111,21 @@ describe("npm install failure reports", () => {
         stderr: "",
         stdout: [
           `npm error code ${code}`,
+          cause,
           ...Array.from({ length: 20 }, () => `npm error ${"🦞".repeat(200)}`),
+          detail,
         ].join("\n"),
       }),
       stepIndex: 0,
       totalSteps: 1,
     });
     const excerpt = step.failureFacts?.map((fact) => fact.message).join("\n") ?? "";
+    expect(excerpt.split("\n")).toEqual([
+      `npm error code ${code === "PRIVATE_IDENTIFIER" ? "unknown" : code}`,
+      cause,
+      detail,
+      omitted,
+    ]);
     expect(Buffer.byteLength(excerpt)).toBeLessThanOrEqual(1024);
     expect(excerpt.split("\n").length).toBeLessThanOrEqual(12);
     const report = await prepareUpdateFailureReport(
@@ -125,6 +136,9 @@ describe("npm install failure reports", () => {
       context,
     );
     expect(report.body).toContain(guidance);
+    for (const line of [cause, detail, omitted]) {
+      expect(report.body).toContain(`- ${line}\n`);
+    }
     expect(report.body).not.toContain("PRIVATE_IDENTIFIER");
     expect(report.body).not.toContain("\ufffd");
   });
