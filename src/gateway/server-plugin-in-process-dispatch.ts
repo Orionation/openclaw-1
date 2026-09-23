@@ -384,6 +384,8 @@ function resolveInProcessGatewayDispatch(
     operatorScopes,
     scopedClientScopes: scope?.client?.connect.scopes,
     registeredScope: context.getGatewayMethodRegistry?.().getScope(method),
+    allowOwnSessionScope: context.getGatewayMethodRegistry?.().getSessionAccess?.(method)
+      ?.allowOwnSessionScope,
   });
   const baseSyntheticClient = createSyntheticPluginRuntimeClient({
     ...(operatorAuthority

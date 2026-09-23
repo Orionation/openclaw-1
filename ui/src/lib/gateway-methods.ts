@@ -1,7 +1,11 @@
 import { roleScopesAllow } from "../../../src/shared/operator-scope-compat.js";
 import type { ApplicationGatewaySnapshot } from "../app/gateway.ts";
 
-export type GatewayMethodOperatorScope = "operator.read" | "operator.write" | "operator.admin";
+export type GatewayMethodOperatorScope =
+  | "operator.read"
+  | "operator.write"
+  | "operator.sessions.write"
+  | "operator.admin";
 
 export function isGatewayMethodAdvertised(
   host: {
