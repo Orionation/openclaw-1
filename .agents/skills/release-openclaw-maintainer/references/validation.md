@@ -68,6 +68,11 @@ also defers Package Acceptance Telegram, broad live/E2E, QA-live and Parallels.
 Package Telegram deferral applies to beta-profile main/alpha too, but those do
 not qualify for `npm-beta-v1`.
 
+Native app lanes (macos-swift, platform publishers) are advisory for the
+npm/ClawHub decision: record their conclusion and fix them in parallel.
+Windows node-test shards remain a required `ci.yml` check; repair and rerun
+that lane in parallel instead of re-cutting.
+
 Windows/macOS cross-OS are advisory for beta/stable/full. All-group
 `cross_os_suite_filter` may omit advisory OS lanes; `npm-beta-v1` and
 `npm-stable-v1` still require all Linux suites. Focused cross-OS rerun semantics
@@ -119,7 +124,10 @@ proven by diagnosis), never for a flake or an advisory lane. When the
 instead of starting another full run.
 
 Native publication retains separate signing/notarization/promotion gates under
-[platform publication](platform-publication.md).
+[platform publication](platform-publication.md). Native app lanes stay
+advisory for the npm/ClawHub decision and are fixed in parallel; selected
+macos-swift and Windows node-test shards inside the `ci.yml` aggregate remain
+required checks, so repair and rerun that lane rather than re-cutting.
 
 Local proof is targeted: never mirror Full Release Validation locally. Run a
 lane locally only after it failed in CI, to separate flake from defect, bounded
