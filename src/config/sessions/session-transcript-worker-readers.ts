@@ -241,7 +241,7 @@ export function createSessionHistoryWorkerReaders(
           return value;
         },
       ),
-    readExactEntries: async (input) =>
+    readExactEntries: async (input, signal) =>
       await runRequest(
         () => ({ kind: "session-exact-entries", ...input }),
         JSON.stringify(input).length * 2,
@@ -257,6 +257,7 @@ export function createSessionHistoryWorkerReaders(
           }
           return value;
         },
+        signal,
       ),
     readRowFacts: async (input) => {
       if (input.sessionKeys.length > MAX_SESSION_ROW_FACTS_KEYS) {
