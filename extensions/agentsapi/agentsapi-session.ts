@@ -21,9 +21,7 @@ export function createAgentsApiSession(options: {
   assertCurrent: () => void;
   onEvent: (event: AgentsApiEvent) => void | Promise<void>;
   onReconcile?: (turn: Turn, items: AgentsApiItem[]) => Promise<void | boolean>;
-  onReconcileHistory?: (
-    entries: Array<{ turn: Turn; items: AgentsApiItem[] }>,
-  ) => Promise<void>;
+  onReconcileHistory?: (entries: Array<{ turn: Turn; items: AgentsApiItem[] }>) => Promise<void>;
   onSettled?: () => void;
   onUsageError?: (error: unknown) => void;
   onTranscriptOrderingGap?: () => void;
@@ -148,9 +146,10 @@ export function createAgentsApiSession(options: {
     const turns = await readAdmittedTurns(readClient, readSignal);
     const entries: Array<{ turn: Turn; items: AgentsApiItem[] }> = [];
     const inputItems = new Set<string>();
-    const itemsByTurn = turns.length || baselineTurnId
-      ? await readItemsByTurn(readClient, readSignal)
-      : new Map<string, AgentsApiItem[]>();
+    const itemsByTurn =
+      turns.length || baselineTurnId
+        ? await readItemsByTurn(readClient, readSignal)
+        : new Map<string, AgentsApiItem[]>();
     for (const turn of turns) {
       const items = itemsByTurn.get(turn.id) ?? [];
       for (const item of items) {
@@ -300,7 +299,8 @@ export function createAgentsApiSession(options: {
         } catch (error) {
           signal.throwIfAborted();
           assertCurrent();
-          const prefixAborted = prefixSignal.aborted &&
+          const prefixAborted =
+            prefixSignal.aborted &&
             (error === prefixSignal.reason || error instanceof APIUserAbortError);
           if (!prefixAborted && !isAgentsApiOptionalHistoryReadFailure(error)) {
             throw error;
@@ -324,16 +324,18 @@ export function createAgentsApiSession(options: {
           // Retrieved native invocations and completed text precede this host
           // receipt. Later items must not overtake its canonical function slot.
           const items = itemsByTurn?.get(call.turn_id);
-          const callIndex = items?.findIndex(
-            (item) => item.type === "function_call" && item.call_id === call.call_id,
-          ) ?? -1;
+          const callIndex =
+            items?.findIndex(
+              (item) => item.type === "function_call" && item.call_id === call.call_id,
+            ) ?? -1;
           if (items && callIndex >= 0) {
             const transcriptReady = await projectSavedState(
               turns.map((turn) => ({
                 turn,
-                items: turn.id === call.turn_id
-                  ? items.slice(0, callIndex)
-                  : itemsByTurn!.get(turn.id) ?? [],
+                items:
+                  turn.id === call.turn_id
+                    ? items.slice(0, callIndex)
+                    : (itemsByTurn!.get(turn.id) ?? []),
               })),
               signal,
             );
@@ -689,6 +691,8 @@ function isAgentsApiTransportDisconnect(error: unknown): boolean {
 }
 
 function isAgentsApiOptionalHistoryReadFailure(error: unknown): boolean {
-  return error instanceof APIConnectionError ||
-    error instanceof APIError && (error.status === 429 || (error.status ?? 0) >= 500);
+  return (
+    error instanceof APIConnectionError ||
+    (error instanceof APIError && (error.status === 429 || (error.status ?? 0) >= 500))
+  );
 }

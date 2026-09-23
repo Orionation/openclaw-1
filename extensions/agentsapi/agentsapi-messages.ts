@@ -292,7 +292,11 @@ export class AgentsApiMessageProjection {
       let transcriptReady = true;
       const terminalTurn = isTerminalTurn(turn.status);
       for (const projected of iterateAgentsApiTranscriptItems(
-        turn.id, items, turn.status, terminalTurn, this.recordedGatewayCallIds,
+        turn.id,
+        items,
+        turn.status,
+        terminalTurn,
+        this.recordedGatewayCallIds,
         (itemId) => this.items.get(this.identity(turn.id, itemId))?.completionObserved === true,
       )) {
         const { item, terminal } = projected;
@@ -300,7 +304,11 @@ export class AgentsApiMessageProjection {
         // Settlement preserves available records even when an earlier native
         // item is unresolved. Their order is explicitly best effort in that case.
         await this.recordItem(
-          turn.id, item, terminal, turn.status, true,
+          turn.id,
+          item,
+          terminal,
+          turn.status,
+          true,
           transcriptReady || terminalTurn,
         );
       }
@@ -313,7 +321,9 @@ export class AgentsApiMessageProjection {
           state.terminal = true;
         }
         const remainingReady = await this.nativeTools.reconcileRemaining(
-          turn.id, turn.status, new Set(items.map((item) => item.id)),
+          turn.id,
+          turn.status,
+          new Set(items.map((item) => item.id)),
         );
         transcriptReady = remainingReady && transcriptReady;
         if (!transcriptReady) {
@@ -456,7 +466,13 @@ export class AgentsApiMessageProjection {
         state.texts = readTextParts(item.content, "output_text");
       }
       await this.emitAssistant(state, terminal);
-      if (canonical && recordTranscript && canRecordAgentsApiTranscriptText(item, enclosingStatus, state.completionObserved) && item.phase === "commentary" && joinTextParts(state.texts)) {
+      if (
+        canonical &&
+        recordTranscript &&
+        canRecordAgentsApiTranscriptText(item, enclosingStatus, state.completionObserved) &&
+        item.phase === "commentary" &&
+        joinTextParts(state.texts)
+      ) {
         await this.append({
           ...createAgentHarnessAssistantMessage(this.attribution(), joinTextParts(state.texts), {
             aborted: false,
@@ -477,7 +493,12 @@ export class AgentsApiMessageProjection {
       await this.emitReasoning();
       if (terminal) {
         const text = joinTextParts(state.summaries);
-        if (canonical && recordTranscript && canRecordAgentsApiTranscriptText(item, enclosingStatus, state.completionObserved) && text) {
+        if (
+          canonical &&
+          recordTranscript &&
+          canRecordAgentsApiTranscriptText(item, enclosingStatus, state.completionObserved) &&
+          text
+        ) {
           await this.append({
             ...createAgentHarnessAssistantMessage(this.attribution(), "", {
               aborted: false,

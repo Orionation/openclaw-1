@@ -207,15 +207,21 @@ export function* iterateAgentsApiTranscriptItems(
       throw new Error("Agents API saved item belongs to a different turn");
     }
     const completionObserved = hasObservedCompletion(item.id);
-    const terminal = terminalTurn ||
+    const terminal =
+      terminalTurn ||
       ["completed", "failed", "incomplete"].includes(item.status ?? "") ||
-      item.status == null && completionObserved;
-    if (transcriptReady && (
-      deferredFinalSeen && hasAgentsApiTranscriptRecord(item) ||
-      !canRecordAgentsApiTranscriptItem(
-        turnId, item, enclosingStatus, recordedGatewayCallIds, completionObserved,
-      )
-    )) {
+      (item.status == null && completionObserved);
+    if (
+      transcriptReady &&
+      ((deferredFinalSeen && hasAgentsApiTranscriptRecord(item)) ||
+        !canRecordAgentsApiTranscriptItem(
+          turnId,
+          item,
+          enclosingStatus,
+          recordedGatewayCallIds,
+          completionObserved,
+        ))
+    ) {
       transcriptReady = false;
     }
     // The host's aggregate final is published at settlement. Later transcript
@@ -231,8 +237,7 @@ export function canRecordAgentsApiNativeToolInvocation(item: AgentsApiItem): boo
     return ["command_execution", "mcp_call", "web_search_call"].includes(item.type);
   }
   if (item.type === "command_execution") {
-    return typeof item.command === "string" &&
-      (item.cwd === null || typeof item.cwd === "string");
+    return typeof item.command === "string" && (item.cwd === null || typeof item.cwd === "string");
   }
   // A retrieved MCP arguments field does not prove that generation is complete.
   // Wait for this item's terminal status before freezing its invocation.
@@ -251,11 +256,14 @@ function canRecordAgentsApiTranscriptItem(
     return canRecordAgentsApiNativeToolInvocation(item);
   }
   if (item.type === "function_call") {
-    return typeof item.call_id === "string" &&
-      recordedGatewayCallIds.has(`${turnId}:${item.call_id}`);
+    return (
+      typeof item.call_id === "string" && recordedGatewayCallIds.has(`${turnId}:${item.call_id}`)
+    );
   }
-  if (item.type === "reasoning" ||
-    (item.type === "message" && item.role === "assistant" && item.phase === "commentary")) {
+  if (
+    item.type === "reasoning" ||
+    (item.type === "message" && item.role === "assistant" && item.phase === "commentary")
+  ) {
     return canRecordAgentsApiTranscriptText(item, enclosingStatus, completionObserved);
   }
   return true;
@@ -272,22 +280,32 @@ export function canRecordAgentsApiTranscriptText(
   // A nullable status can use an observed native item completion. Recovery also
   // permits the completed coordinator's reasoning snapshot; explicitly running
   // items remain provisional even when their current summaries are empty.
-  return item.status == null && (completionObserved ||
-    item.type === "reasoning" && enclosingStatus === "completed");
+  return (
+    item.status == null &&
+    (completionObserved || (item.type === "reasoning" && enclosingStatus === "completed"))
+  );
 }
 
 function isAgentsApiDeferredFinalText(item: AgentsApiItem): boolean {
-  return item.type === "message" && item.role === "assistant" &&
-    item.phase !== "commentary" && item.status === "completed" &&
-    Boolean(item.content?.some((part) => part.type === "output_text" && part.text));
+  return (
+    item.type === "message" &&
+    item.role === "assistant" &&
+    item.phase !== "commentary" &&
+    item.status === "completed" &&
+    Boolean(item.content?.some((part) => part.type === "output_text" && part.text))
+  );
 }
 
 function hasAgentsApiTranscriptRecord(item: AgentsApiItem): boolean {
-  return ["command_execution", "mcp_call", "web_search_call", "function_call"].includes(item.type) ||
-    item.type === "reasoning" && Boolean(item.summary?.some(
-      (part) => part.type === "summary_text" && part.text,
-    )) || item.type === "message" && item.role === "assistant" && item.phase === "commentary" &&
-    Boolean(item.content?.some((part) => part.type === "output_text" && part.text));
+  return (
+    ["command_execution", "mcp_call", "web_search_call", "function_call"].includes(item.type) ||
+    (item.type === "reasoning" &&
+      Boolean(item.summary?.some((part) => part.type === "summary_text" && part.text))) ||
+    (item.type === "message" &&
+      item.role === "assistant" &&
+      item.phase === "commentary" &&
+      Boolean(item.content?.some((part) => part.type === "output_text" && part.text)))
+  );
 }
 
 export function readTextParts(parts: AgentsApiItem["content"], type: string): Map<number, string> {
@@ -306,4 +324,3 @@ export function joinTextParts(parts: Map<number, string>): string {
     .map(([, text]) => text)
     .join("");
 }
-
