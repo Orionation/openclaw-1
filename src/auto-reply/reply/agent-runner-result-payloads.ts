@@ -222,7 +222,12 @@ export async function prepareReplyAgentPayloads(state: {
     ? undefined
     : buildEmptyInteractiveReplyPayload({ completion });
   const buildStrandedRetryMissingDeliveryDiagnostic = (): ReplyPayload | undefined => {
-    if (completion.outcome !== "missing" || !sessionKey || !storePath || followupRun.strandedReplyRetry !== true) {
+    if (
+      completion.outcome !== "missing" ||
+      !sessionKey ||
+      !storePath ||
+      followupRun.strandedReplyRetry !== true
+    ) {
       return undefined;
     }
     if (sessionCtx.InboundEventKind === "room_event" || completedSourceReplyDelivery) {
