@@ -262,13 +262,17 @@ export class PersonalInstructions extends OpenClawLightDomElement {
                     >
                       ${this.busy === "save" ? t("common.saving") : t("common.save")}
                     </button>
-                    <button
-                      class="btn"
-                      ?disabled=${this.busy !== null}
-                      @click=${() => this.reload()}
-                    >
-                      ${this.busy === "load" ? t("common.loading") : t("profilePage.personalInstructions.reload")}
-                    </button>
+                    ${
+                      this.error
+                        ? html`<button
+                            class="btn"
+                            ?disabled=${this.busy !== null}
+                            @click=${() => this.reload()}
+                          >
+                            ${t("profilePage.personalInstructions.reload")}
+                          </button>`
+                        : nothing
+                    }
                     <span class="settings-row__desc" role="status"
                       >${this.dirty ? t("profilePage.personalInstructions.dirty") : this.saved ? t("profilePage.personalInstructions.saved") : nothing}</span
                     >

@@ -115,6 +115,7 @@ it("loads and saves only the signed-in personal file with operator.read", async 
   await settle(element);
   expect(request).toHaveBeenCalledWith("users.personalFile.get", { agentId: "main" });
   expect(button(element, "Save").disabled).toBe(true);
+  expect(button(element, "Reload")).toBeUndefined();
   await input(element, "Draft");
   button(element, "Save").click();
   await settle(element);
@@ -124,6 +125,7 @@ it("loads and saves only the signed-in personal file with operator.read", async 
     expectedHash: "hash-1",
   });
   expect(element.textContent).toContain("Saved");
+  expect(button(element, "Reload")).toBeUndefined();
 });
 
 it("shows one section heading without repeating it inside the editor card", async () => {
@@ -136,6 +138,7 @@ it("shows one section heading without repeating it inside the editor card", asyn
   expect(element.querySelector(".personal-instructions label")).toBeNull();
   expect(editor?.getAttribute("aria-label")).toBe("Personal instructions");
   expect(editor?.getAttribute("aria-describedby")).toBe("personal-instructions-guidance");
+  expect(editor?.rows).toBe(7);
 });
 
 it("never loads a personal file without a signed-in profile", async () => {
@@ -164,6 +167,20 @@ it("creates missing files with a null expected hash and rejects oversized drafts
   });
 });
 
+it("offers recovery after an automatic load fails, then hides it after retry", async () => {
+  const request = vi.fn().mockRejectedValueOnce(new Error("Offline")).mockResolvedValueOnce(file);
+  const { element } = mount(request);
+  await settle(element);
+  expect(request).toHaveBeenCalledWith("users.personalFile.get", { agentId: "main" });
+  expect(element.querySelector("textarea")).toBeNull();
+  expect(button(element, "Reload")).toBeDefined();
+  button(element, "Reload").click();
+  await settle(element);
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(element.querySelector("textarea")?.value).toBe(file.content);
+  expect(button(element, "Reload")).toBeUndefined();
+});
+
 it("preserves a conflicting draft, confirms reload, and keeps it when reload fails", async () => {
   const request = vi
     .fn()
@@ -189,6 +206,7 @@ it("preserves a conflicting draft, confirms reload, and keeps it when reload fai
   button(element, "Reload").click();
   await settle(element);
   expect(element.querySelector("textarea")?.value).toBe("External edit");
+  expect(button(element, "Reload")).toBeUndefined();
 });
 
 it("follows the global Settings agent without a second selector or leaking unsaved drafts", async () => {
@@ -204,6 +222,7 @@ it("follows the global Settings agent without a second selector or leaking unsav
   await settle(element);
   expect(request).toHaveBeenLastCalledWith("users.personalFile.get", { agentId: "other" });
   expect(element.querySelector("textarea")?.value).toBe("Other instructions");
+  expect(button(element, "Reload")).toBeUndefined();
   selection.set("main");
   await settle(element);
   expect(element.querySelector("textarea")?.value).toBe("Main draft");

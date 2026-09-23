@@ -89,7 +89,9 @@
 .personal-instructions__editor {
   width: 100%;
   max-width: none;
+  /* The seven-row default stays fixed as content grows; only the native handle resizes it. */
   resize: vertical;
+  overflow-y: auto;
   font-family: var(--mono);
   line-height: 1.5;
 }
