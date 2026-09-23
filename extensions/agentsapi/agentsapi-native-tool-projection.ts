@@ -518,7 +518,6 @@ export class AgentsApiNativeToolProjection {
     await this.emitEvent(event);
     this.assertCurrent();
   }
-
 }
 
 function nativeTerminalProjectionHash(snapshot: Record<string, unknown>): string {

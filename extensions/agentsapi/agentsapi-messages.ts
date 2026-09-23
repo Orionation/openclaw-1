@@ -99,14 +99,11 @@ export class AgentsApiMessageProjection {
     const usage = emptyUsage();
     let observed = false;
     let reasoningTokens: number | undefined;
-    // Canonical turn snapshots replace SSE observations, never add to them.
+    // Canonical turn usage replaces SSE usage; a missing snapshot retains
+    // terminal-event usage for that same scoped turn, without adding it twice.
     this.canonicalUsageRecorded = true;
-    this.usageByTurn.clear();
     for (const turn of new Map(turns.map((record) => [record.id, record])).values()) {
-      if (!turn.usage) {
-        continue;
-      }
-      const normalized = normalizeUsage(turn.usage);
+      const normalized = turn.usage ? normalizeUsage(turn.usage) : this.usageByTurn.get(turn.id);
       if (!normalized) {
         continue;
       }
@@ -114,7 +111,14 @@ export class AgentsApiMessageProjection {
       usage.input += normalized.input ?? 0;
       usage.output += normalized.output ?? 0;
       usage.cacheRead += normalized.cacheRead ?? 0;
-      usage.totalTokens += normalized.total ?? turn.usage.input_tokens + turn.usage.output_tokens;
+      usage.totalTokens +=
+        normalized.total ??
+        (turn.usage
+          ? turn.usage.input_tokens + turn.usage.output_tokens
+          : (normalized.input ?? 0) +
+            (normalized.output ?? 0) +
+            (normalized.cacheRead ?? 0) +
+            (normalized.cacheWrite ?? 0));
       if (normalized.reasoningTokens !== undefined) {
         reasoningTokens = (reasoningTokens ?? 0) + normalized.reasoningTokens;
       }
@@ -125,6 +129,8 @@ export class AgentsApiMessageProjection {
         ...normalizeUsage(usage),
         ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
       };
+    } else {
+      this.reply.usage = { contextUsage: { state: "unavailable" } };
     }
     this.reply.assistantUsage = usage;
   }

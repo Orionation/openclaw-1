@@ -48,34 +48,43 @@ export async function recordAgentsApiNativeToolTranscript(
     outcome,
     options.capturedOutput,
   );
-  const text = output ??
+  const text =
+    output ??
     (item.type === "web_search_call"
       ? `Web search ${outcome.status}; native search results are unavailable.`
       : (outcome.error ?? `${tool.name} ${outcome.status}`));
-  await appendAgentsApiTranscriptMessage(params, {
-    ...createAgentHarnessToolCallMessage(
-      { api: "openai-responses", provider: "openai", modelId: params.model.id },
-      { id, name: tool.name, arguments: tool.args },
-      nextTimestamp(),
-    ),
-    idempotencyKey: `${id}:call`,
-  }, assertCurrent);
-  await appendAgentsApiTranscriptMessage(params, {
-    ...createAgentHarnessToolResultMessage(
-      { id, name: tool.name, text, isError: outcome.isError, details },
-      nextTimestamp(),
-    ),
-    __openclaw: {
-      toolOutput: {
-        source: "execution",
-        modelInput: "unverified",
-        ...(outcome.outcomeUnknown ? { outcome: "unknown" } : {}),
-        ...(options.captureTruncated ? { captureTruncated: true } : {}),
-      },
-      ...(item.type === "web_search_call" ? { resultContentSource: "network" } : {}),
+  await appendAgentsApiTranscriptMessage(
+    params,
+    {
+      ...createAgentHarnessToolCallMessage(
+        { api: "openai-responses", provider: "openai", modelId: params.model.id },
+        { id, name: tool.name, arguments: tool.args },
+        nextTimestamp(),
+      ),
+      idempotencyKey: `${id}:call`,
     },
-    idempotencyKey: `${id}:result`,
-  }, assertCurrent);
+    assertCurrent,
+  );
+  await appendAgentsApiTranscriptMessage(
+    params,
+    {
+      ...createAgentHarnessToolResultMessage(
+        { id, name: tool.name, text, isError: outcome.isError, details },
+        nextTimestamp(),
+      ),
+      __openclaw: {
+        toolOutput: {
+          source: "execution",
+          modelInput: "unverified",
+          ...(outcome.outcomeUnknown ? { outcome: "unknown" } : {}),
+          ...(options.captureTruncated ? { captureTruncated: true } : {}),
+        },
+        ...(item.type === "web_search_call" ? { resultContentSource: "network" } : {}),
+      },
+      idempotencyKey: `${id}:result`,
+    },
+    assertCurrent,
+  );
   return true;
 }
 

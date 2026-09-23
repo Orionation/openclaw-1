@@ -20,7 +20,9 @@ export function createAgentsApiSession(options: {
   assertCurrent: () => void;
   onEvent: (event: AgentsApiEvent) => void | Promise<void>;
   onReconcile?: (turn: Turn, items: AgentsApiItem[]) => Promise<void>;
-  onReconcileHistory?: (entries: Array<{ turn: Turn; items: AgentsApiItem[] }>) => Promise<void>;
+  onReconcileHistory?: (
+    entries: Array<{ turn: Turn; items: AgentsApiItem[] }>,
+  ) => Promise<void>;
   onSettled?: () => void;
   onUsageError?: (error: unknown) => void;
   executeFunction?: (call: AgentsApiFunctionCall) => Promise<FunctionExecutionResult>;
@@ -186,16 +188,20 @@ export function createAgentsApiSession(options: {
     if (baselineIndex < 0) {
       throw new Error("Agents API historical reconciliation lost its baseline turn");
     }
-    const priorTurns = turns.slice(0, baselineIndex + 1).filter((turn) => isTerminalTurn(turn.status));
+    const priorTurns = turns
+      .slice(0, baselineIndex + 1)
+      .filter((turn) => isTerminalTurn(turn.status));
     if (!priorTurns.length) {
       return;
     }
     // Historical facts repair the retained conversation without entering this
     // attempt's admission, live presentation, tool lifecycle, or token accounting.
-    await options.onReconcileHistory(priorTurns.map((turn) => ({
-      turn,
-      items: itemsByTurn.get(turn.id) ?? [],
-    })));
+    await options.onReconcileHistory(
+      priorTurns.map((turn) => ({
+        turn,
+        items: itemsByTurn.get(turn.id) ?? [],
+      })),
+    );
     readSignal.throwIfAborted();
   };
   const rememberItemTurn = (itemId: string, turnId: string) => {
