@@ -116,8 +116,7 @@ import { selectContextEngineForTranscriptHost } from "../harness/context-engine-
 import { drainPendingContextEngineTurnsBeforeRun } from "../harness/context-engine-turn-attempt.js";
 import { createAgentQuestionAnswerAuthority } from "../harness/host-private-capabilities.js";
 import type { ResolvedProviderAuth } from "../model-auth-runtime-shared.js";
-import { findModelCatalogEntry, loadManifestModelCatalog } from "../model-catalog.js";
-import type { ModelCatalogEntry } from "../model-catalog.types.js";
+import { loadManifestModelCatalog, overlayConfiguredModelCatalog } from "../model-catalog.js";
 import { resolveModelContextWindowProfile } from "../model-context-window.js";
 import { recordAdmittedModelRoutingDecision } from "../model-routing-decision.js";
 import { applyPluginTextReplacements } from "../plugin-text-transforms.js";
@@ -164,6 +163,7 @@ import {
   finalizeCliMcpGrant,
   normalizeOptionalMcpContextValue,
 } from "./mcp-grant-context.js";
+import { resolveCliCatalogCapabilities } from "./model-capabilities.js";
 import { CLAUDE_CLI_CONTEXT_MODEL_ALIASES, detectNodeClaudePlacement } from "./prepare-claude.js";
 import {
   buildCliTurnAppendContext,
@@ -237,22 +237,6 @@ const defaultPrepareDeps = {
   loadManifestModelCatalog,
 };
 const prepareDeps = { ...defaultPrepareDeps };
-
-function findSelectableContextWindowEntry(params: {
-  catalog: ModelCatalogEntry[];
-  providers: string[];
-  models: string[];
-}): ModelCatalogEntry | undefined {
-  for (const provider of params.providers) {
-    for (const model of params.models) {
-      const entry = findModelCatalogEntry(params.catalog, { provider, modelId: model });
-      if (entry?.contextWindows?.length) {
-        return entry;
-      }
-    }
-  }
-  return undefined;
-}
 
 function resolveReusableCliSessionId(reusableCliSession: CliReusableSession): string | undefined {
   return reusableCliSession.mode === "reuse" || reusableCliSession.mode === "reuse-with-drift"
@@ -1076,16 +1060,21 @@ async function prepareCliRunContextWithinReadFence(
   // resolveAnthropicFixedContextWindow deliberately ignores catalog scalars,
   // so the selected (or default) option must apply after it or a 200k session
   // would auto-compact against a 1M budget.
-  const selectableContextEntry = findSelectableContextWindowEntry({
-    catalog: params.config
-      ? prepareDeps.loadManifestModelCatalog({ config: params.config, workspaceDir })
-      : [],
-    providers: uniqueStrings(
-      [params.provider, backendResolved.modelProvider].filter(
-        (provider): provider is string => typeof provider === "string" && provider.length > 0,
-      ),
-    ),
-    models: uniqueStrings([modelId, normalizedCatalogModel]),
+  const modelCatalog = params.config
+    ? overlayConfiguredModelCatalog({
+        catalog: prepareDeps.loadManifestModelCatalog({ config: params.config, workspaceDir }),
+        config: params.config,
+        workspaceDir,
+      })
+    : [];
+  const { selectableContextEntry, providerThinkingLevel } = resolveCliCatalogCapabilities({
+    catalog: modelCatalog,
+    provider: params.provider,
+    modelProvider: backendResolved.modelProvider,
+    modelId,
+    normalizedModel: normalizedCatalogModel,
+    agentRuntime: backendResolved.id,
+    thinkLevel: params.thinkLevel,
   });
   if (selectableContextEntry) {
     const contextWindowProfile = resolveModelContextWindowProfile({
@@ -1642,7 +1631,7 @@ async function prepareCliRunContextWithinReadFence(
       modelId,
       ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),
       contextTokenBudget: contextWindowInfo.tokens,
-      thinkingLevel: params.thinkLevel === "ultra" ? "max" : params.thinkLevel,
+      thinkingLevel: providerThinkingLevel,
       authProfileId: effectiveAuthProfileId,
       executionMode,
       toolAvailability: params.cliToolAvailability,
@@ -2056,6 +2045,7 @@ async function prepareCliRunContextWithinReadFence(
           isNewSession:
             !reusableCliSessionId?.trim() || reusableCliSession.mode === "reuse-with-drift",
           systemPrompt,
+          thinkLevel: params.thinkLevel,
           context: [hookResult?.appendContext, authorizedPromptBuildResult?.appendContext],
         });
         const logicalPrompt = composeCliPromptContext(preparedPrompt, {
@@ -2193,6 +2183,7 @@ async function prepareCliRunContextWithinReadFence(
       contextEngineConfig: runConfig,
       modelId,
       normalizedModel,
+      providerThinkingLevel,
       contextWindowInfo,
       systemPrompt,
       systemPromptReport,
