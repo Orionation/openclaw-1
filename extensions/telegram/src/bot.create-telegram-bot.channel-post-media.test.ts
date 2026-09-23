@@ -8,6 +8,7 @@ import {
   holdTelegramMediaTimeouts,
   resolveFlushTimerForDelay,
   flushChannelPostMediaGroup,
+  withTelegramGetFileRetryClock,
 } from "./bot-media-timers.test-support.js";
 import {
   createChannelPostContext,
@@ -464,15 +465,15 @@ describe("createTelegramBot channel_post media", () => {
     setOpenTelegramDirectConfig();
     createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
-    await handler(
-      createTelegramPrivateMediaContext({
-        messageId: 100000,
-        fileId: "doc-100000",
-        fileName: "report.pdf",
-        getFile: async () => {
-          throw new Error("Network request for 'getFile' failed!");
-        },
-      }),
+    await withTelegramGetFileRetryClock("Network request for 'getFile' failed!", (getFile) =>
+      handler(
+        createTelegramPrivateMediaContext({
+          messageId: 100000,
+          fileId: "doc-100000",
+          fileName: "report.pdf",
+          getFile,
+        }),
+      ),
     );
     await waitForTelegramMockCalls(sendMessageSpy, 1);
     expectTelegramDownloadWarning(100000);
@@ -644,22 +645,32 @@ describe("createTelegramBot channel_post media", () => {
   );
 
   it.each([
-    { failure: "a download error", error: "Network request for 'getFile' failed!" },
-    { failure: "an oversized file", error: "Bad Request: file is too big" },
-  ])("silently ingests unmentioned group media after $failure (#92067)", async ({ error }) => {
-    setTelegramIngestGroupConfig();
-    createTelegramBot({ token: "tok" });
-    await dispatchTelegramGroupPhoto({
-      messageId: 92070,
-      getFile: async () => {
-        throw new Error(error);
-      },
-    });
-    expect(sendMessageSpy).not.toHaveBeenCalled();
-    expect(replySpy).not.toHaveBeenCalled();
-    expect(saveRemoteMedia).not.toHaveBeenCalled();
-    expectTelegramIngestHook([]);
-  });
+    {
+      failure: "a download error",
+      error: "Network request for 'getFile' failed!",
+      retryable: true,
+    },
+    { failure: "an oversized file", error: "Bad Request: file is too big", retryable: false },
+  ])(
+    "silently ingests unmentioned group media after $failure (#92067)",
+    async ({ error, retryable }) => {
+      setTelegramIngestGroupConfig();
+      createTelegramBot({ token: "tok" });
+      const dispatch = (getFile: () => Promise<never>) =>
+        dispatchTelegramGroupPhoto({ messageId: 92070, getFile });
+      if (retryable) {
+        await withTelegramGetFileRetryClock(error, dispatch);
+      } else {
+        await dispatch(async () => {
+          throw new Error(error);
+        });
+      }
+      expect(sendMessageSpy).not.toHaveBeenCalled();
+      expect(replySpy).not.toHaveBeenCalled();
+      expect(saveRemoteMedia).not.toHaveBeenCalled();
+      expectTelegramIngestHook([]);
+    },
+  );
 
   it.each([
     { name: "all", messageIds: [92068, 92069], partial: false, deniedMention: false },
@@ -764,14 +775,14 @@ describe("createTelegramBot channel_post media", () => {
         accountPolicy,
       });
       createTelegramBot({ token: "tok", ...(accountPolicy ? { accountId: "work" } : {}) });
-      await dispatchTelegramGroupPhoto({
-        messageId,
-        topicId,
-        caption: "bert, see attachment",
-        getFile: async () => {
-          throw new Error("Network request for 'getFile' failed!");
-        },
-      });
+      await withTelegramGetFileRetryClock("Network request for 'getFile' failed!", (getFile) =>
+        dispatchTelegramGroupPhoto({
+          messageId,
+          topicId,
+          caption: "bert, see attachment",
+          getFile,
+        }),
+      );
       const expectedWarnings = Number(shouldWarn);
       expect(sendMessageSpy).toHaveBeenCalledTimes(expectedWarnings);
       expect(replySpy).toHaveBeenCalledTimes(expectedWarnings);
