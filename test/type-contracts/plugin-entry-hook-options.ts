@@ -1,6 +1,10 @@
-import { describe, expectTypeOf, it } from "vitest";
-import type { OpenClawPluginApi, WorkerMachineOption, WorkerProvider } from "./plugin-entry.js";
-import type { PluginHookAgentTrigger } from "./types.js";
+import { expectTypeOf } from "vitest";
+import type {
+  OpenClawPluginApi,
+  WorkerMachineOption,
+  WorkerProvider,
+} from "../../src/plugin-sdk/plugin-entry.js";
+import type { PluginHookAgentTrigger } from "../../src/plugin-sdk/types.js";
 
 function registerScopedReplyHook(api: OpenClawPluginApi): void {
   api.on("before_agent_reply", async () => undefined, { eligibleTriggers: ["heartbeat", "cron"] });
@@ -32,25 +36,23 @@ function registerAuthorizedPromptHook(api: OpenClawPluginApi): void {
 void registerScopedReplyHook;
 void registerAuthorizedPromptHook;
 
-describe("plugin entry hook option contracts", () => {
-  it("exposes scoped reply and prompt authority options through the public plugin API", () => {
-    expectTypeOf<OpenClawPluginApi["on"]>().toBeFunction();
-    expectTypeOf<PluginHookAgentTrigger>().toEqualTypeOf<"cron" | "heartbeat" | "user">();
-    expectTypeOf<WorkerMachineOption>().toEqualTypeOf<{
-      readonly id: string;
-      readonly label: string;
-      readonly cpu?: number;
-      readonly memoryGb?: number;
-      readonly default?: boolean;
-      readonly os?: string;
-    }>();
-    expectTypeOf<
-      Awaited<ReturnType<NonNullable<WorkerProvider["listOperatingSystems"]>>>[number]
-    >().toEqualTypeOf<{
-      readonly id: string;
-      readonly label: string;
-      readonly default?: boolean;
-      readonly disabledReason?: string;
-    }>();
-  });
-});
+// plugin entry hook option contracts
+// exposes scoped reply and prompt authority options through the public plugin API
+expectTypeOf<OpenClawPluginApi["on"]>().toBeFunction();
+expectTypeOf<PluginHookAgentTrigger>().toEqualTypeOf<"cron" | "heartbeat" | "user">();
+expectTypeOf<WorkerMachineOption>().toEqualTypeOf<{
+  readonly id: string;
+  readonly label: string;
+  readonly cpu?: number;
+  readonly memoryGb?: number;
+  readonly default?: boolean;
+  readonly os?: string;
+}>();
+expectTypeOf<
+  Awaited<ReturnType<NonNullable<WorkerProvider["listOperatingSystems"]>>>[number]
+>().toEqualTypeOf<{
+  readonly id: string;
+  readonly label: string;
+  readonly default?: boolean;
+  readonly disabledReason?: string;
+}>();
