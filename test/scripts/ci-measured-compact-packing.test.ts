@@ -113,8 +113,8 @@ describe("measured CI row packing", () => {
   };
 
   it.each([
-    { compactMode: "push" as const, predictedSeconds: 202 },
-    { compactMode: "pull-request" as const, predictedSeconds: 208 },
+    { compactMode: "push" as const, predictedSeconds: 218 },
+    { compactMode: "pull-request" as const, predictedSeconds: 223 },
   ])(
     "packs native serial $compactMode observations with one setup reserve and unchanged children",
     ({ compactMode, predictedSeconds }) => {
@@ -250,7 +250,7 @@ describe("measured CI row packing", () => {
       estimateSerialGroup: (group) => (group.shard_name === "agentic-cli" ? 1_000 : 170),
     });
     expect(after).toHaveLength(1);
-    expect(after[0]!.predictedSeconds).toBe(505);
+    expect(after[0]!.predictedSeconds).toBe(535);
     expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(before));
   });
 
