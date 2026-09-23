@@ -386,7 +386,10 @@ export function createAgentsApiSession(options: {
         signal.throwIfAborted();
         await submit(prompt);
         onSubmitted();
-        while (!settled) {
+        while (true) {
+          if (settled) {
+            break;
+          }
           let chunk: IteratorResult<AgentsApiEvent>;
           try {
             chunk = await nextEvent;
