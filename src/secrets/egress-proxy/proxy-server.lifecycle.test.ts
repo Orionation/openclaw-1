@@ -258,9 +258,10 @@ describe("secret egress registration lifecycle", () => {
     }
     for (const [options] of vi.mocked(https.request).mock.calls) {
       const agent = (options as https.RequestOptions).agent;
-      if (agent && typeof agent === "object") {
+      expect(agent).toBeInstanceOf(https.Agent);
+      if (agent instanceof https.Agent) {
         expect(JSON.stringify(agent.options)).not.toContain(value);
-        expect(agent.options.headers).toBeUndefined();
+        expect(agent.options).not.toHaveProperty("headers");
       }
     }
     const stoppedPeerClosed = onClose(peers[5]!);
