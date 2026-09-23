@@ -25,7 +25,10 @@ import {
   type AgentsApiNativeTool,
   type AgentsApiNativeToolOutcome,
 } from "./agentsapi-native-items.js";
-import { recordAgentsApiNativeToolTranscript } from "./agentsapi-transcript.js";
+import {
+  recordAgentsApiNativeToolInvocation,
+  recordAgentsApiNativeToolTranscript,
+} from "./agentsapi-transcript.js";
 
 type AgentEvent = Parameters<NonNullable<AgentHarnessAttemptParamsV2["onAgentEvent"]>>[0];
 type NativeToolState = {
@@ -35,6 +38,7 @@ type NativeToolState = {
   terminal: boolean;
   tool?: AgentsApiNativeTool;
   startProjected: boolean;
+  callRecorded: boolean;
   resultRecorded: boolean;
   provisionalTerminalObserved: boolean;
   canonicalTerminalObserved: boolean;
@@ -99,6 +103,7 @@ export class AgentsApiNativeToolProjection {
     terminal: boolean,
     enclosingStatus?: string,
     canonical = false,
+    recordTranscript = true,
   ): Promise<boolean> {
     this.assertCurrent();
     const tool = agentsApiNativeTool(item, this.params);
@@ -117,6 +122,7 @@ export class AgentsApiNativeToolProjection {
         tool,
         terminal: false,
         startProjected: false,
+        callRecorded: false,
         resultRecorded: false,
         provisionalTerminalObserved: false,
         canonicalTerminalObserved: false,
@@ -144,22 +150,43 @@ export class AgentsApiNativeToolProjection {
       }
     }
     await this.startTool(state);
+    if (canonical && recordTranscript && !state.callRecorded) {
+      state.callRecorded = await recordAgentsApiNativeToolInvocation(
+        this.params,
+        this.remoteSessionId,
+        turnId,
+        item,
+        this.assertCurrent,
+        this.nextTimestamp,
+      );
+    }
     if (terminal) {
-      await this.finishTool(state, enclosingStatus, canonical);
+      await this.finishTool(state, enclosingStatus, canonical, recordTranscript);
     }
     state.terminal = terminal;
     return true;
   }
 
-  async reconcileRemaining(turnId: string, status?: string): Promise<void> {
+  async reconcileRemaining(
+    turnId: string,
+    status: string | undefined,
+    currentItemIds: ReadonlySet<string>,
+  ): Promise<boolean> {
     this.assertCurrent();
+    let transcriptReady = true;
     for (const state of this.items.values()) {
       if (state.turnId !== turnId || (state.resultRecorded && state.canonicalTerminalObserved)) {
         continue;
       }
+      if (!state.resultRecorded && !currentItemIds.has(state.item.id)) {
+        // Retain previously retrieved facts, but do not promise their original
+        // position when the terminal snapshot no longer contains this item.
+        transcriptReady = false;
+      }
       await this.finishTool(state, status, true);
       state.terminal = true;
     }
+    return transcriptReady;
   }
 
   async observeOutput(event: AgentsApiEvent): Promise<void> {
@@ -241,6 +268,7 @@ export class AgentsApiNativeToolProjection {
     state: NativeToolState,
     enclosingStatus?: string,
     canonical = false,
+    recordTranscript = true,
   ): Promise<void> {
     if (!state.tool) {
       return;
@@ -294,7 +322,7 @@ export class AgentsApiNativeToolProjection {
       ...(meta ? { meta } : {}),
       isError: outcome.isError,
     });
-    if (canonical && state.canonicalItem && !state.resultRecorded) {
+    if (canonical && recordTranscript && state.canonicalItem && !state.resultRecorded) {
       // Only retrieved items supply durable calls and results. Streamed tool
       // names, arguments, and output may still be partial.
       state.resultRecorded = await recordAgentsApiNativeToolTranscript(

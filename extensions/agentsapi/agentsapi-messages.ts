@@ -12,7 +12,13 @@ import {
 import { calculateCost, type AssistantMessage } from "openclaw/plugin-sdk/llm";
 import type { AgentsApiEvent, AgentsApiItem, AgentsApiTurn } from "./agentsapi-client.js";
 import { AgentsApiNativeToolProjection } from "./agentsapi-native-tool-projection.js";
-import { appendAgentsApiTranscriptMessage } from "./agentsapi-transcript.js";
+import {
+  appendAgentsApiTranscriptMessage,
+  canRecordAgentsApiTranscriptText,
+  iterateAgentsApiTranscriptItems,
+  joinTextParts,
+  readTextParts,
+} from "./agentsapi-transcript.js";
 
 export { recordAgentsApiToolTranscript } from "./agentsapi-transcript.js";
 
@@ -27,6 +33,7 @@ type NativeTextState = {
   turnId: string;
   item: AgentsApiItem;
   terminal: boolean;
+  completionObserved: boolean;
   texts: Map<number, string>;
   summaries: Map<number, string>;
   recoveredPartial: boolean;
@@ -51,6 +58,8 @@ export class AgentsApiMessageProjection {
   private classification: AgentHarnessAttemptResult["agentHarnessResultClassification"];
   private timestamp = Date.now();
   private presentationEnabled = true;
+  private transcriptOrderingGapReported = false;
+  private readonly recordedGatewayCallIds = new Set<string>();
 
   constructor(
     private readonly params: AgentHarnessAttemptParamsV2,
@@ -250,30 +259,50 @@ export class AgentsApiMessageProjection {
     }
   }
 
+  recordGatewayTranscriptReceipt(turnId: string, callId: string): void {
+    this.assertCurrent();
+    this.recordedGatewayCallIds.add(`${turnId}:${callId}`);
+  }
+
+  reportTranscriptOrderingGap(): void {
+    this.assertCurrent();
+    if (this.transcriptOrderingGapReported) {
+      return;
+    }
+    this.transcriptOrderingGapReported = true;
+    embeddedAgentLog.warn(
+      "Agents API canonical transcript prefix is unavailable; host input and tool receipts retain their existing placement",
+    );
+  }
+
   async reconcile(
     turn: NativeTurn,
     items: AgentsApiItem[],
     options: { presentation?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     this.assertCurrent();
     if (this.finalTurnId) {
-      return;
+      return true;
     }
     const previousPresentation = this.presentationEnabled;
     // Cancellation reconciliation runs only after the stream is retired. It
     // records canonical facts under the original owner, without reopening output.
     this.presentationEnabled = previousPresentation && options.presentation !== false;
     try {
-      for (const item of items) {
-        if (item.turn_id && item.turn_id !== turn.id) {
-          throw new Error("Agents API saved item belongs to a different turn");
-        }
-        const terminal =
-          isTerminalTurn(turn.status) ||
-          item.status === "completed" ||
-          item.status === "failed" ||
-          item.status === "incomplete";
-        await this.recordItem(turn.id, item, terminal, turn.status, true);
+      let transcriptReady = true;
+      const terminalTurn = isTerminalTurn(turn.status);
+      for (const projected of iterateAgentsApiTranscriptItems(
+        turn.id, items, turn.status, terminalTurn, this.recordedGatewayCallIds,
+        (itemId) => this.items.get(this.identity(turn.id, itemId))?.completionObserved === true,
+      )) {
+        const { item, terminal } = projected;
+        transcriptReady = projected.transcriptReady;
+        // Settlement preserves available records even when an earlier native
+        // item is unresolved. Their order is explicitly best effort in that case.
+        await this.recordItem(
+          turn.id, item, terminal, turn.status, true,
+          transcriptReady || terminalTurn,
+        );
       }
       this.recordTurnUsage(turn);
       if (isTerminalTurn(turn.status)) {
@@ -283,8 +312,15 @@ export class AgentsApiMessageProjection {
           }
           state.terminal = true;
         }
-        await this.nativeTools.reconcileRemaining(turn.id, turn.status);
+        const remainingReady = await this.nativeTools.reconcileRemaining(
+          turn.id, turn.status, new Set(items.map((item) => item.id)),
+        );
+        transcriptReady = remainingReady && transcriptReady;
+        if (!transcriptReady) {
+          this.reportTranscriptOrderingGap();
+        }
       }
+      return transcriptReady;
     } finally {
       this.presentationEnabled = previousPresentation;
     }
@@ -298,7 +334,9 @@ export class AgentsApiMessageProjection {
       }
       return;
     }
-    await this.reconcile(turn, items);
+    if (!(await this.reconcile(turn, items))) {
+      this.reportTranscriptOrderingGap();
+    }
     await this.endReasoning();
     const completedMessages = items.filter(
       (item) => item.type === "message" && item.role === "assistant" && item.status === "completed",
@@ -361,6 +399,7 @@ export class AgentsApiMessageProjection {
     terminal: boolean,
     enclosingStatus?: string,
     canonical = false,
+    recordTranscript = true,
   ): Promise<void> {
     if (
       item.type === "function_call" ||
@@ -369,7 +408,16 @@ export class AgentsApiMessageProjection {
     ) {
       return;
     }
-    if (await this.nativeTools.recordItem(turnId, item, terminal, enclosingStatus, canonical)) {
+    if (
+      await this.nativeTools.recordItem(
+        turnId,
+        item,
+        terminal,
+        enclosingStatus,
+        canonical,
+        recordTranscript,
+      )
+    ) {
       return;
     }
     if (item.type !== "message" && item.type !== "reasoning") {
@@ -386,6 +434,7 @@ export class AgentsApiMessageProjection {
         turnId,
         item,
         terminal: false,
+        completionObserved: false,
         texts: new Map(),
         summaries: new Map(),
         recoveredPartial: false,
@@ -394,6 +443,9 @@ export class AgentsApiMessageProjection {
       this.turnByItem.set(item.id, turnId);
     }
     state.item = item;
+    if (!canonical && terminal) {
+      state.completionObserved = true;
+    }
     // Saved state has no replay cursor. A recovered partial item stays on
     // snapshots until its authoritative completion; new items stream normally.
     if (canonical && !terminal) {
@@ -404,7 +456,7 @@ export class AgentsApiMessageProjection {
         state.texts = readTextParts(item.content, "output_text");
       }
       await this.emitAssistant(state, terminal);
-      if (terminal && item.phase === "commentary" && joinTextParts(state.texts)) {
+      if (canonical && recordTranscript && canRecordAgentsApiTranscriptText(item, enclosingStatus, state.completionObserved) && item.phase === "commentary" && joinTextParts(state.texts)) {
         await this.append({
           ...createAgentHarnessAssistantMessage(this.attribution(), joinTextParts(state.texts), {
             aborted: false,
@@ -425,7 +477,7 @@ export class AgentsApiMessageProjection {
       await this.emitReasoning();
       if (terminal) {
         const text = joinTextParts(state.summaries);
-        if (text) {
+        if (canonical && recordTranscript && canRecordAgentsApiTranscriptText(item, enclosingStatus, state.completionObserved) && text) {
           await this.append({
             ...createAgentHarnessAssistantMessage(this.attribution(), "", {
               aborted: false,
@@ -631,23 +683,6 @@ function emptyUsage(): AssistantMessage["usage"] {
     contextUsage: { state: "unavailable" },
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
-}
-
-function readTextParts(parts: AgentsApiItem["content"], type: string): Map<number, string> {
-  const texts = new Map<number, string>();
-  parts?.forEach((part, index) => {
-    if (part.type === type) {
-      texts.set(index, part.text ?? "");
-    }
-  });
-  return texts;
-}
-
-function joinTextParts(parts: Map<number, string>): string {
-  return [...parts.entries()]
-    .toSorted(([left], [right]) => left - right)
-    .map(([, text]) => text)
-    .join("");
 }
 
 function isTerminalTurn(status?: string): boolean {

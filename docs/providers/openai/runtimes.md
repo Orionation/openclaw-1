@@ -137,8 +137,18 @@ new items continue streaming normally.
 When a retry retains the native conversation, later canonical facts can also
 repair missing tool records from earlier terminal turns. These records append
 to the existing history without replaying progress or counting earlier work
-in the current attempt. Running native commands do not receive a durable result
-until their item reaches a terminal status.
+in the current attempt. Retrieved command invocation facts can be saved while
+execution is still running; a durable result requires the item's own terminal
+status. MCP arguments and web-search actions are saved after their items finish.
+
+Commentary remains live while durable commentary and reasoning records wait for
+retrieved native history. Before a Gateway function executes, the harness makes
+a bounded attempt to save the preceding native records. Missing or unfinished
+items can prevent exact ordering; this is reported without preventing an
+otherwise authorized Gateway function from running. Terminal reconciliation
+retains available completed records instead of dropping them behind an
+unresolved item. Host input and Gateway receipts keep their existing transcript
+placement, and historical repairs append without rewriting earlier messages.
 
 Native token usage is best effort and is accumulated across all admitted turns,
 including work superseded by a steering follow-up. Cached input and reasoning

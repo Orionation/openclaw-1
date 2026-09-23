@@ -53,17 +53,13 @@ export async function recordAgentsApiNativeToolTranscript(
     (item.type === "web_search_call"
       ? `Web search ${outcome.status}; native search results are unavailable.`
       : (outcome.error ?? `${tool.name} ${outcome.status}`));
-  await appendAgentsApiTranscriptMessage(
+  await recordAgentsApiNativeToolInvocation(
     params,
-    {
-      ...createAgentHarnessToolCallMessage(
-        { api: "openai-responses", provider: "openai", modelId: params.model.id },
-        { id, name: tool.name, arguments: tool.args },
-        nextTimestamp(),
-      ),
-      idempotencyKey: `${id}:call`,
-    },
+    sessionId,
+    turnId,
+    item,
     assertCurrent,
+    nextTimestamp,
   );
   await appendAgentsApiTranscriptMessage(
     params,
@@ -82,6 +78,36 @@ export async function recordAgentsApiNativeToolTranscript(
         ...(item.type === "web_search_call" ? { resultContentSource: "network" } : {}),
       },
       idempotencyKey: `${id}:result`,
+    },
+    assertCurrent,
+  );
+  return true;
+}
+
+/** Canonical invocation facts can precede completion of the native tool. */
+export async function recordAgentsApiNativeToolInvocation(
+  params: AgentHarnessAttemptParamsV2,
+  sessionId: string,
+  turnId: string,
+  item: AgentsApiItem,
+  assertCurrent: () => void,
+  nextTimestamp: () => number,
+): Promise<boolean> {
+  assertCurrent();
+  const tool = agentsApiNativeTool(item, params);
+  if (!tool || !canRecordAgentsApiNativeToolInvocation(item)) {
+    return false;
+  }
+  const id = `agentsapi:${sessionId}:${turnId}:${item.id}`;
+  await appendAgentsApiTranscriptMessage(
+    params,
+    {
+      ...createAgentHarnessToolCallMessage(
+        { api: "openai-responses", provider: "openai", modelId: params.model.id },
+        { id, name: tool.name, arguments: tool.args },
+        nextTimestamp(),
+      ),
+      idempotencyKey: `${id}:call`,
     },
     assertCurrent,
   );
@@ -164,3 +190,120 @@ export async function appendAgentsApiTranscriptMessage<TMessage extends AgentMes
   }
   return append.result.message;
 }
+
+/** Walk the retrieved native prefix without another transcript queue or cursor. */
+export function* iterateAgentsApiTranscriptItems(
+  turnId: string,
+  items: readonly AgentsApiItem[],
+  enclosingStatus: string | undefined,
+  terminalTurn: boolean,
+  recordedGatewayCallIds: ReadonlySet<string>,
+  hasObservedCompletion: (itemId: string) => boolean,
+): Generator<{ item: AgentsApiItem; terminal: boolean; transcriptReady: boolean }> {
+  let transcriptReady = true;
+  let deferredFinalSeen = false;
+  for (const item of items) {
+    if (item.turn_id && item.turn_id !== turnId) {
+      throw new Error("Agents API saved item belongs to a different turn");
+    }
+    const completionObserved = hasObservedCompletion(item.id);
+    const terminal = terminalTurn ||
+      ["completed", "failed", "incomplete"].includes(item.status ?? "") ||
+      item.status == null && completionObserved;
+    if (transcriptReady && (
+      deferredFinalSeen && hasAgentsApiTranscriptRecord(item) ||
+      !canRecordAgentsApiTranscriptItem(
+        turnId, item, enclosingStatus, recordedGatewayCallIds, completionObserved,
+      )
+    )) {
+      transcriptReady = false;
+    }
+    // The host's aggregate final is published at settlement. Later transcript
+    // slots cannot occupy their exact canonical position around that final.
+    deferredFinalSeen ||= isAgentsApiDeferredFinalText(item);
+    yield { item, terminal, transcriptReady };
+  }
+}
+
+/** Nonterminal calls require retrieved invocation fields, rather than streamed guesses. */
+export function canRecordAgentsApiNativeToolInvocation(item: AgentsApiItem): boolean {
+  if (["completed", "failed", "incomplete"].includes(item.status ?? "")) {
+    return ["command_execution", "mcp_call", "web_search_call"].includes(item.type);
+  }
+  if (item.type === "command_execution") {
+    return typeof item.command === "string" &&
+      (item.cwd === null || typeof item.cwd === "string");
+  }
+  // A retrieved MCP arguments field does not prove that generation is complete.
+  // Wait for this item's terminal status before freezing its invocation.
+  return false;
+}
+
+/** Backend publication stops before invocation or text facts that are still incomplete. */
+function canRecordAgentsApiTranscriptItem(
+  turnId: string,
+  item: AgentsApiItem,
+  enclosingStatus: string | undefined,
+  recordedGatewayCallIds: ReadonlySet<string>,
+  completionObserved = false,
+): boolean {
+  if (["command_execution", "mcp_call", "web_search_call"].includes(item.type)) {
+    return canRecordAgentsApiNativeToolInvocation(item);
+  }
+  if (item.type === "function_call") {
+    return typeof item.call_id === "string" &&
+      recordedGatewayCallIds.has(`${turnId}:${item.call_id}`);
+  }
+  if (item.type === "reasoning" ||
+    (item.type === "message" && item.role === "assistant" && item.phase === "commentary")) {
+    return canRecordAgentsApiTranscriptText(item, enclosingStatus, completionObserved);
+  }
+  return true;
+}
+
+export function canRecordAgentsApiTranscriptText(
+  item: AgentsApiItem,
+  enclosingStatus?: string,
+  completionObserved = false,
+): boolean {
+  if (["completed", "failed", "incomplete"].includes(item.status ?? "")) {
+    return true;
+  }
+  // A nullable status can use an observed native item completion. Recovery also
+  // permits the completed coordinator's reasoning snapshot; explicitly running
+  // items remain provisional even when their current summaries are empty.
+  return item.status == null && (completionObserved ||
+    item.type === "reasoning" && enclosingStatus === "completed");
+}
+
+function isAgentsApiDeferredFinalText(item: AgentsApiItem): boolean {
+  return item.type === "message" && item.role === "assistant" &&
+    item.phase !== "commentary" && item.status === "completed" &&
+    Boolean(item.content?.some((part) => part.type === "output_text" && part.text));
+}
+
+function hasAgentsApiTranscriptRecord(item: AgentsApiItem): boolean {
+  return ["command_execution", "mcp_call", "web_search_call", "function_call"].includes(item.type) ||
+    item.type === "reasoning" && Boolean(item.summary?.some(
+      (part) => part.type === "summary_text" && part.text,
+    )) || item.type === "message" && item.role === "assistant" && item.phase === "commentary" &&
+    Boolean(item.content?.some((part) => part.type === "output_text" && part.text));
+}
+
+export function readTextParts(parts: AgentsApiItem["content"], type: string): Map<number, string> {
+  const texts = new Map<number, string>();
+  parts?.forEach((part, index) => {
+    if (part.type === type) {
+      texts.set(index, part.text ?? "");
+    }
+  });
+  return texts;
+}
+
+export function joinTextParts(parts: Map<number, string>): string {
+  return [...parts.entries()]
+    .toSorted(([left], [right]) => left - right)
+    .map(([, text]) => text)
+    .join("");
+}
+

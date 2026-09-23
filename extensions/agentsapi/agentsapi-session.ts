@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { APIConnectionError, APIError, APIUserAbortError } from "openai";
 import type { Turn } from "openai/resources/beta/agents/sessions/turns";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -19,12 +20,13 @@ export function createAgentsApiSession(options: {
   signal: AbortSignal;
   assertCurrent: () => void;
   onEvent: (event: AgentsApiEvent) => void | Promise<void>;
-  onReconcile?: (turn: Turn, items: AgentsApiItem[]) => Promise<void>;
+  onReconcile?: (turn: Turn, items: AgentsApiItem[]) => Promise<void | boolean>;
   onReconcileHistory?: (
     entries: Array<{ turn: Turn; items: AgentsApiItem[] }>,
   ) => Promise<void>;
   onSettled?: () => void;
   onUsageError?: (error: unknown) => void;
+  onTranscriptOrderingGap?: () => void;
   executeFunction?: (call: AgentsApiFunctionCall) => Promise<FunctionExecutionResult>;
   onFunctionResult?: (
     call: AgentsApiFunctionCall,
@@ -128,23 +130,27 @@ export function createAgentsApiSession(options: {
     cancelled = !terminatedByTool && latest?.status === "cancelled";
     return turns;
   };
+  const readItemsByTurn = async (readClient: AgentsApiClient, readSignal: AbortSignal) => {
+    const savedItems = await readClient.items(sessionId, undefined, readSignal);
+    readSignal.throwIfAborted();
+    const itemsByTurn = new Map<string, AgentsApiItem[]>();
+    for (const item of savedItems) {
+      if (!item.turn_id) {
+        continue;
+      }
+      const items = itemsByTurn.get(item.turn_id) ?? [];
+      items.push(item);
+      itemsByTurn.set(item.turn_id, items);
+    }
+    return itemsByTurn;
+  };
   const readSavedState = async (readClient: AgentsApiClient, readSignal: AbortSignal) => {
     const turns = await readAdmittedTurns(readClient, readSignal);
     const entries: Array<{ turn: Turn; items: AgentsApiItem[] }> = [];
     const inputItems = new Set<string>();
-    const itemsByTurn = new Map<string, AgentsApiItem[]>();
-    if (turns.length || baselineTurnId) {
-      const savedItems = await readClient.items(sessionId, undefined, readSignal);
-      readSignal.throwIfAborted();
-      for (const item of savedItems) {
-        if (!item.turn_id) {
-          continue;
-        }
-        const items = itemsByTurn.get(item.turn_id) ?? [];
-        items.push(item);
-        itemsByTurn.set(item.turn_id, items);
-      }
-    }
+    const itemsByTurn = turns.length || baselineTurnId
+      ? await readItemsByTurn(readClient, readSignal)
+      : new Map<string, AgentsApiItem[]>();
     for (const turn of turns) {
       const items = itemsByTurn.get(turn.id) ?? [];
       for (const item of items) {
@@ -168,11 +174,14 @@ export function createAgentsApiSession(options: {
     entries: Array<{ turn: Turn; items: AgentsApiItem[] }>,
     readSignal: AbortSignal,
   ) => {
+    let transcriptReady = true;
     for (const { turn, items } of entries) {
       readSignal.throwIfAborted();
-      await options.onReconcile?.(turn, items);
+      const ready = await options.onReconcile?.(turn, items);
+      transcriptReady = ready !== false && transcriptReady;
       readSignal.throwIfAborted();
     }
+    return transcriptReady;
   };
   const reconcilePriorHistory = async (
     readClient: AgentsApiClient,
@@ -263,17 +272,42 @@ export function createAgentsApiSession(options: {
         if (!options.executeFunction) {
           throw new Error("Agents API MVP cannot continue: agent.session.requires_action");
         }
+        let submissionFence = submission;
+        await submissionFence;
+        assertCurrent();
         const calls = await client.pendingFunctionCalls(sessionId, signal);
         if (!calls.length) {
           return;
         }
         const turns = await readAdmittedTurns(client, signal);
         assertCurrent();
+        if (submissionFence !== submission) {
+          return relayFunctions();
+        }
         const latestTurn = turns.at(-1);
         if (!latestTurn) {
           throw new Error("Agents API function request has no current attempt root turn");
         }
         latestInputTurnId = latestTurn.id;
+        const admittedCount = admittedMessageCount;
+        let itemsByTurn: Map<string, AgentsApiItem[]> | undefined;
+        // This optional history barrier must not retire valid hosted work for
+        // a transient read failure or wait indefinitely before a Gateway action.
+        const prefixSignal = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
+        try {
+          itemsByTurn = await readItemsByTurn(client, prefixSignal);
+          assertCurrent();
+        } catch (error) {
+          signal.throwIfAborted();
+          assertCurrent();
+          const prefixAborted = prefixSignal.aborted &&
+            (error === prefixSignal.reason || error instanceof APIUserAbortError);
+          if (!prefixAborted && !isAgentsApiOptionalHistoryReadFailure(error)) {
+            throw error;
+          }
+          options.onTranscriptOrderingGap?.();
+          assertCurrent();
+        }
         for (const call of calls) {
           if (
             call.turn_id !== latestTurn.id ||
@@ -286,6 +320,36 @@ export function createAgentsApiSession(options: {
           const identity = `${sessionId}:${call.turn_id}:${call.call_id}`;
           if (relayedCalls.has(identity)) {
             continue;
+          }
+          // Retrieved native invocations and completed text precede this host
+          // receipt. Later items must not overtake its canonical function slot.
+          const items = itemsByTurn?.get(call.turn_id);
+          const callIndex = items?.findIndex(
+            (item) => item.type === "function_call" && item.call_id === call.call_id,
+          ) ?? -1;
+          if (items && callIndex >= 0) {
+            const transcriptReady = await projectSavedState(
+              turns.map((turn) => ({
+                turn,
+                items: turn.id === call.turn_id
+                  ? items.slice(0, callIndex)
+                  : itemsByTurn!.get(turn.id) ?? [],
+              })),
+              signal,
+            );
+            assertCurrent();
+            if (!transcriptReady) {
+              options.onTranscriptOrderingGap?.();
+              assertCurrent();
+            }
+          } else {
+            options.onTranscriptOrderingGap?.();
+            assertCurrent();
+          }
+          if (submissionFence !== submission || admittedCount !== admittedMessageCount) {
+            // A steer admitted during the barrier invalidates this captured
+            // function batch. Re-read it without repeating a claimed action.
+            return relayFunctions();
           }
           // Claim before execution so duplicate events cannot repeat a Gateway side effect.
           relayedCalls.add(identity);
@@ -304,7 +368,9 @@ export function createAgentsApiSession(options: {
             return admittedSubmission;
           });
           void submission.catch(() => {});
-          await submission;
+          const acknowledgementFence = submission;
+          await acknowledgementFence;
+          submissionFence = acknowledgementFence;
           await options.onFunctionResult?.(call, result);
           assertCurrent();
           if (result.terminate || result.sourceReplyDelivered) {
@@ -620,4 +686,9 @@ function isAgentsApiTransportDisconnect(error: unknown): boolean {
     return true;
   }
   return error.cause instanceof Error && isAgentsApiTransportDisconnect(error.cause);
+}
+
+function isAgentsApiOptionalHistoryReadFailure(error: unknown): boolean {
+  return error instanceof APIConnectionError ||
+    error instanceof APIError && (error.status === 429 || (error.status ?? 0) >= 500);
 }

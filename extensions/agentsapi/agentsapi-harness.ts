@@ -401,6 +401,7 @@ async function runAgentsApiSession(
         projection!.reconcile(turn, items, { presentation: !finalizingProjection }),
       onUsageError: (error) =>
         embeddedAgentLog.warn("Agents API token accounting unavailable", { error }),
+      onTranscriptOrderingGap: () => projection!.reportTranscriptOrderingGap(),
       onReconcileHistory: async (entries) => {
         for (const { turn, items } of entries) {
           for (const item of items) {
@@ -430,7 +431,10 @@ async function runAgentsApiSession(
           },
         });
         assertCurrent();
-        return surface.execute(call);
+        const result = await surface.execute(call);
+        assertCurrent();
+        projection!.recordGatewayTranscriptReceipt(call.turn_id, call.call_id);
+        return result;
       },
       onFunctionResult: async (call, result) => {
         completedToolCount++;
