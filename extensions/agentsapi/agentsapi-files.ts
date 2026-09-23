@@ -144,6 +144,7 @@ export async function collectOutputs(
   let totalBytes = 0;
   for (const artifact of artifacts) {
     if (
+      session.environment.type !== "openai_hosted" ||
       artifact.environment_id !== session.environment.id ||
       path.posix.normalize(artifact.path) !== artifact.path ||
       artifact.path.includes("\0") ||

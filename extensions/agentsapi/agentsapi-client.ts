@@ -327,6 +327,9 @@ export class AgentsApiClient {
     signal: AbortSignal,
   ): Promise<void> {
     const session = await this.session(sessionId, signal);
+    if (session.environment.type !== "openai_hosted") {
+      throw new Error("Agents API file upload requires the session's connected hosted environment");
+    }
     const environmentPath = `/agents/environments/${encodeURIComponent(session.environment.id)}`;
     const response = await this.requestResource(environmentPath, "GET", signal);
     const environment = z
