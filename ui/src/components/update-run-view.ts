@@ -1,11 +1,42 @@
 import { html, nothing, type PropertyValues } from "lit";
 import { property } from "lit/decorators.js";
+import { UPDATE_RUN_PHASES } from "../../../packages/gateway-protocol/src/update-run-vocabulary.js";
 import type { UpdateRunRecord, UpdateRunStep } from "../../../src/infra/update-run-record.ts";
-import { formatUpdateRunStepLabel, projectUpdateRun } from "../app/update-run-projection.ts";
+import { projectUpdateRun, updateRunStepOwner } from "../app/update-run-projection.ts";
 import { t } from "../i18n/index.ts";
+import { registerUpdateActionsEnglish } from "../i18n/locales/en-update-actions.ts";
 import { OpenClawLightDomElement } from "../lit/openclaw-element.ts";
 import { StreamAutoFollowController } from "../lit/stream-auto-follow-controller.ts";
 import "../styles/update-run-view.css";
+
+registerUpdateActionsEnglish();
+
+const STEP_LABELS: Record<string, string> = {
+  "snapshot-space-preflight": "snapshotSpace",
+  "updater-runtime-retention": "prepareUpdater",
+  "candidate-snapshot": "snapshot",
+  "git fetch": "fetch",
+  "git fetch tags": "fetch",
+  "git fetch target tag": "fetch",
+  "global update": "update",
+  "global update (omit optional)": "update",
+  install: "install",
+  build: "build",
+  "ui:build": "buildUi",
+  doctor: "doctor",
+};
+
+function formatUpdateRunStepLabel(step: string): string {
+  const owner = updateRunStepOwner(step);
+  if (UPDATE_RUN_PHASES.some((phase) => phase === owner)) {
+    return t(`updates.run.phase.${owner}`);
+  }
+  const key = STEP_LABELS[owner];
+  const label = key
+    ? t(`updates.run.stepLabel.${key}`)
+    : owner.replace(/[-_:]+/gu, " ").replace(/^./u, (letter) => letter.toUpperCase());
+  return step.startsWith("warning:") ? t("updates.run.stepWarning", { step: label }) : label;
+}
 
 const STEP_MARKS = {
   completed: "✓",
@@ -132,7 +163,7 @@ ${details}</pre>
           aria-label=${t("updates.run.details")}
           @scroll=${(event: Event) => this.streamFollow.handleScroll(event)}
         >
-${view.details || t("updates.run.noDetails")}</pre>
+${view.details || t(view.detailStep === "updater-runtime-retention" ? "updates.run.prepareUpdaterDetails" : "updates.run.noDetails")}</pre>
       </details>
       <ul class="update-run-view__oracles" aria-label=${t("updates.run.verification")}>
         ${view.oracles.map((oracle) => html`<li data-oracle=${oracle.name} data-state=${oracle.state} class="update-run-view__oracle update-run-view__oracle--${oracle.state}"><span aria-hidden="true">${ORACLE_MARKS[oracle.state]}</span><span>${t(`updates.run.oracle.${oracle.name}`)}</span><small>${t(`updates.run.oracleState.${oracle.state}`)}</small></li>`)}

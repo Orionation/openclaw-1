@@ -13,36 +13,9 @@ import { t } from "../i18n/index.ts";
 
 type OracleState = "pass" | "warn" | "fail" | "pending";
 
-const STEP_LABELS: Record<string, string> = {
-  "snapshot-space-preflight": "snapshotSpace",
-  "updater-runtime-retention": "prepareUpdater",
-  "candidate-snapshot": "snapshot",
-  "git fetch": "fetch",
-  "git fetch tags": "fetch",
-  "git fetch target tag": "fetch",
-  "global update": "update",
-  "global update (omit optional)": "update",
-  install: "install",
-  build: "build",
-  "ui:build": "buildUi",
-  doctor: "doctor",
-};
-
-function updateRunStepOwner(step: string): string {
+export function updateRunStepOwner(step: string): string {
   // Diagnostic suffixes identify ledger receipts, not additional installation work.
   return step.replace(/^(?:diagnostic|warning):(.+?)(?::\d+)?$/u, "$1");
-}
-
-export function formatUpdateRunStepLabel(step: string): string {
-  const owner = updateRunStepOwner(step);
-  if (UPDATE_RUN_PHASES.some((phase) => phase === owner)) {
-    return t(`updates.run.phase.${owner}`);
-  }
-  const key = STEP_LABELS[owner];
-  const label = key
-    ? t(`updates.run.stepLabel.${key}`)
-    : owner.replace(/[-_:]+/gu, " ").replace(/^./u, (letter) => letter.toUpperCase());
-  return step.startsWith("warning:") ? t("updates.run.stepWarning", { step: label }) : label;
 }
 
 export function projectUpdateRun(run: UpdateRunRecord, connected = true) {
@@ -100,11 +73,7 @@ export function projectUpdateRun(run: UpdateRunRecord, connected = true) {
       sliceUtf16Safe(lines.join("\n"), -4096).split(/\r?\n/u).slice(-80).join("\n"),
     ]),
   );
-  const detailHint =
-    detailStep?.step === "updater-runtime-retention" ? t("updates.run.prepareUpdaterDetails") : "";
-  const details = detailStep
-    ? stepDetails.get(updateRunStepOwner(detailStep.step)) || detailHint
-    : "";
+  const details = detailStep ? (stepDetails.get(updateRunStepOwner(detailStep.step)) ?? "") : "";
   const facts = run.verification;
   const identity = resolveUpdateRunIdentity(facts, run.after);
   const booleanState = (value: boolean | undefined): OracleState =>

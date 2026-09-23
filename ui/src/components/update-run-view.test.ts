@@ -89,16 +89,9 @@ describe("update run projection", () => {
     },
   );
 
-  it.each([
-    {
-      step: "updater-runtime-retention",
-      details:
-        "Keeping a copy of the current updater so it can finish safely while OpenClaw is replaced.",
-    },
-    { step: "build", details: "" },
-  ])(
-    "shows the active $step before its first diagnostic instead of the previous step",
-    ({ step, details }) => {
+  it.each(["updater-runtime-retention", "build"])(
+    "selects the active %s before its first diagnostic instead of the previous step",
+    (step) => {
       const view = projectUpdateRun(
         run({
           phase: "validating",
@@ -115,7 +108,7 @@ describe("update run projection", () => {
         }),
       );
       expect(view.detailStep).toBe(step);
-      expect(view.details).toBe(details);
+      expect(view.details).toBe("");
     },
   );
 
@@ -140,6 +133,18 @@ describe("update run projection", () => {
 });
 
 describe("update run view", () => {
+  it("registers its own English step labels and retention guidance on first load", async () => {
+    const element = await mount(
+      run({ steps: [{ step: "updater-runtime-retention", status: "in_progress" }] }),
+    );
+    expect(element.querySelector(".update-run-view__diagnostics summary")?.textContent).toContain(
+      "Preparing the updater",
+    );
+    expect(element.querySelector(".update-run-view__details")?.textContent).toContain(
+      "Keeping a copy of the current updater so it can finish safely while OpenClaw is replaced.",
+    );
+  });
+
   it("presents diagnostic receipts as readable details without inventing installation steps", async () => {
     const element = await mount(
       run({
