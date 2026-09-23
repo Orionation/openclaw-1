@@ -2,6 +2,8 @@ import { serializeAgentSchemaInspectionError } from "../state/openclaw-agent-sch
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import {
   hasAuthoritativeTaskBackingFromRecords,
+  readManagedTaskBacking,
+  sameTaskBackingInstance,
   selectCurrentCanonicalTaskBacking,
 } from "../tasks/task-backing-records.js";
 import { restoreTaskExecutionSnapshot } from "../tasks/task-execution-owner.js";
@@ -40,6 +42,7 @@ import type {
   TaskMirroredFlowSyncOutcome,
   TaskRegistryRestoreResult,
 } from "../tasks/task-registry-restore.worker.js";
+import type { TaskWorkerTransitionInput } from "../tasks/task-registry-transition.kernel.js";
 import { runTaskRecordTransitionOperation } from "../tasks/task-registry-transition.operation.js";
 import type { TaskRegistryStore, TaskRegistryStoreSnapshot } from "../tasks/task-registry.store.js";
 import type { TaskRegistryMutationScope } from "../tasks/task-registry.store.types.js";
@@ -155,11 +158,26 @@ export function createInMemoryTaskRegistryStore(
       const unsupported = (): never => {
         throw new Error("Initial flow mutations require the isolated worker fixture.");
       };
-      const transitionRecord = (
-        transition: Parameters<typeof runTaskRecordTransitionOperation>[0],
-      ) =>
+      const transitionRecord = (transition: TaskWorkerTransitionInput) =>
         runTaskRecordTransitionOperation(transition, {
-          readCurrent: () => this.loadSnapshot().tasks.get(transition.taskId),
+          readCurrent: () => {
+            const task = this.loadSnapshot().tasks.get(transition.taskId);
+            const selected = transition.selectedTask;
+            if (task && selected && task.taskId !== selected.taskId) {
+              const managed = readManagedTaskBacking(task.detail);
+              if (
+                !selected.backing ||
+                !managed ||
+                managed.taskId !== selected.taskId ||
+                !sameTaskBackingInstance(managed.instance, selected.backing) ||
+                !task.parentFlowId ||
+                flowStore?.loadSnapshot().flows.get(task.parentFlowId)?.syncMode !== "managed"
+              ) {
+                return undefined;
+              }
+            }
+            return task;
+          },
           hasAuthoritativeBacking: (task) =>
             hasAuthoritativeTaskBackingFromRecords(task, {
               isManagedFlow: (flowId) =>
@@ -189,6 +207,7 @@ export function createInMemoryTaskRegistryStore(
           input: TaskInitialWorkerOperations[Key]["input"],
         ) => TaskInitialWorkerOperations[Key]["output"];
       } = {
+        "tasks.transitionRunRow": (input) => transitionRecord(input),
         "tasks.bindRunOwner": (input) => transitionRecord({ kind: "run-owner", ...input }),
         "tasks.acknowledgeStateChange": (input) =>
           acknowledgeTaskStateNotification(input, {

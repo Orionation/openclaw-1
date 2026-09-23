@@ -590,7 +590,7 @@ export async function completeSubagentRunAttempt(
     // A steer abort ends one agent run but continues the same detached task.
     // The successor must remain able to publish its eventual terminal state.
     if (provisionalKillSnapshot) {
-      const finalizedTasks = finalizeSubagentTaskRun(params, {
+      const finalizedTasks = await finalizeSubagentTaskRun(params, {
         entry,
         outcome: executionOutcome,
         taskResolution: postCaptureTaskResolution,
@@ -646,7 +646,7 @@ export async function completeSubagentRunAttempt(
         throw error;
       }
       if (!suppressTaskFinalization) {
-        finalizeSubagentTaskRun(params, {
+        await finalizeSubagentTaskRun(params, {
           entry,
           outcome: executionOutcome,
         });

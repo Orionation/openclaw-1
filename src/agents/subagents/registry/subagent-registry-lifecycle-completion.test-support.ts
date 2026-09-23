@@ -1,5 +1,9 @@
 import { expect, it, vi, type Mock } from "vitest";
+import { createDeferredCore } from "../../../shared/deferred.js";
+import { DetachedTaskLegacyRuntimeError } from "../../../tasks/detached-task-runtime-errors.js";
 import type { setDetachedTaskDeliveryStatusByRunId } from "../../../tasks/detached-task-runtime.js";
+import { TaskRunTransitionUnsettledError } from "../../../tasks/task-registry-transition.operation.js";
+import type { TaskRecord } from "../../../tasks/task-registry.types.js";
 import type {
   blockSubagentCompletionDelivery,
   settleRequesterCompletionBatch,
@@ -155,7 +159,7 @@ export function registerPrivateCompletionSettlementTests({
       const runSubagentAnnounceFlow = vi.fn<SubagentLifecycleOptions["runSubagentAnnounceFlow"]>(
         async (params) => {
           if (params.signal?.aborted) {
-            params.onDeliveryResult?.({ delivered: false, path: "none" });
+            await params.onDeliveryResult?.({ delivered: false, path: "none" });
             return "retryable";
           }
           return params.isCompletionOwnedByRequesterYield?.()
@@ -217,4 +221,233 @@ export function registerPrivateCompletionSettlementTests({
       }
     },
   );
+}
+
+export function registerTaskFinalizationAuthorityTests({
+  createRunEntry,
+  createLifecycleController,
+  completeRun,
+  taskExecutorMocks,
+  helperMocks,
+  lifecycleEventMocks,
+  expectFields,
+  firstCall,
+}: {
+  createRunEntry: (overrides?: Partial<SubagentRunRecord>) => SubagentRunRecord;
+  createLifecycleController: (
+    options: { entry: SubagentRunRecord } & Partial<SubagentLifecycleOptions>,
+  ) => SubagentLifecycleController;
+  completeRun: (
+    controller: SubagentLifecycleController,
+    entry: SubagentRunRecord,
+    options?: { triggerCleanup?: boolean },
+  ) => Promise<void>;
+  taskExecutorMocks: {
+    completeTaskRunByRunId: Mock;
+    setDetachedTaskDeliveryStatusByRunId: Mock;
+  };
+  helperMocks: { persistSubagentSessionTiming: Mock<() => Promise<void>> };
+  lifecycleEventMocks: { emitSessionLifecycleEvent: Mock };
+  expectFields: (value: unknown, expected: Record<string, unknown>) => void;
+  firstCall: (mock: Mock) => ReadonlyArray<unknown>;
+}) {
+  it.each([
+    new TaskRunTransitionUnsettledError("Task publication remains unsettled"),
+    new Error("Task writer failed before sibling settlement"),
+  ])("retains completion retries after canonical completion: %s", async (failure) => {
+    const entry = createRunEntry();
+    const task: TaskRecord = {
+      taskId: "task-unsettled-completion",
+      runtime: "subagent",
+      requesterSessionKey: "agent:main:main",
+      ownerKey: "agent:main:main",
+      scopeKind: "session",
+      runId: entry.taskRunId ?? entry.runId,
+      childSessionKey: entry.childSessionKey,
+      task: "Already committed canonical completion",
+      status: "succeeded",
+      deliveryStatus: "not_applicable",
+      notifyPolicy: "silent",
+      createdAt: 1,
+      endedAt: 4_000,
+    };
+    taskExecutorMocks.completeTaskRunByRunId
+      .mockRejectedValueOnce(failure)
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValue([task]);
+    const controller = createLifecycleController({
+      entry,
+      resolveSubagentTask: () => ({ lookup: "available", task }),
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(completeRun(controller, entry)).rejects.toBe(failure);
+      expect(helperMocks.persistSubagentSessionTiming).not.toHaveBeenCalled();
+    }
+    await expect(completeRun(controller, entry)).resolves.toBeUndefined();
+    expect(taskExecutorMocks.completeTaskRunByRunId).toHaveBeenCalledTimes(3);
+    expect(helperMocks.persistSubagentSessionTiming).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    new TaskRunTransitionUnsettledError("Delivery publication remains unsettled"),
+    new Error("Delivery writer failed before sibling settlement"),
+  ])("retries task delivery settlement without resending the completion: %s", async (failure) => {
+    vi.useFakeTimers();
+    const entry = createRunEntry({
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      retainAttachmentsOnKeep: true,
+      endedReason: SUBAGENT_ENDED_REASON_COMPLETE,
+      execution: { status: "terminal", endedAt: Date.now(), outcome: { status: "ok" } },
+      completion: { required: true, resultText: "delivered result" },
+    });
+    const firstAttemptSettled = createDeferredCore<void>();
+    const cleanupCompleted = createDeferredCore<void>();
+    const persist = vi.fn(() => {
+      if (entry.cleanupCompletedAt !== undefined) {
+        firstAttemptSettled.resolve();
+        cleanupCompleted.resolve();
+      } else if (entry.delivery?.status === "delivered" && entry.cleanupHandled === false) {
+        firstAttemptSettled.resolve();
+      }
+    });
+    taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId.mockRejectedValue(failure);
+    const runSubagentAnnounceFlow = vi.fn<SubagentLifecycleOptions["runSubagentAnnounceFlow"]>(
+      async (params) => {
+        await params.onDeliveryResult?.({
+          delivered: true,
+          path: "direct",
+          deliveredAt: Date.now(),
+        });
+        return "delivered";
+      },
+    );
+    const controller = createLifecycleController({
+      entry,
+      persist,
+      persistOrThrow: persist,
+      runSubagentAnnounceFlow,
+      resumeSubagentRun: (runId) => {
+        controller.startSubagentAnnounceCleanupFlow(runId, entry);
+      },
+    });
+    try {
+      expect(controller.startSubagentAnnounceCleanupFlow(entry.runId, entry)).toBe(true);
+      await firstAttemptSettled.promise;
+      expect(entry.delivery?.status).toBe("delivered");
+      expect(entry.cleanupCompletedAt).toBeUndefined();
+      expect(entry.cleanupHandled).toBe(false);
+      expect(runSubagentAnnounceFlow).toHaveBeenCalledOnce();
+      taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId.mockResolvedValue([]);
+      await vi.runOnlyPendingTimersAsync();
+      await cleanupCompleted.promise;
+      expect(entry.cleanupCompletedAt).toBeTypeOf("number");
+      expect(runSubagentAnnounceFlow).toHaveBeenCalledOnce();
+      expect(taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId).toHaveBeenLastCalledWith(
+        expect.objectContaining({ runId: entry.runId, deliveryStatus: "delivered" }),
+        expect.any(Function),
+      );
+    } finally {
+      controller.clearScheduledResumeTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { identity: "ASCII", runId: "run-1234567890", expected: "run-…7890" },
+    { identity: "short ASCII", runId: "short", expected: "***" },
+    { identity: "astral prefix", runId: "abc😀" + "x".repeat(10), expected: "abc…xxxx" },
+    { identity: "astral suffix", runId: "x".repeat(10) + "😀abc", expected: "xxxx…abc" },
+    {
+      identity: "astral prefix and suffix",
+      runId: "abc😀" + "x".repeat(10) + "😀xyz",
+      expected: "abc…xyz",
+    },
+  ])(
+    "keeps $identity run IDs well-formed in actual completion warnings",
+    async ({ runId, expected }) => {
+      const warn = vi.fn();
+      const entry = createRunEntry({ runId });
+      taskExecutorMocks.completeTaskRunByRunId.mockImplementation(() => {
+        throw new DetachedTaskLegacyRuntimeError("task store boom");
+      });
+
+      const controller = createLifecycleController({ entry, warn });
+      await expect(completeRun(controller, entry)).resolves.toBeUndefined();
+
+      const [, warningFields] = firstCall(warn);
+      const maskedRunId = (warningFields as { runId?: string }).runId;
+      expect(maskedRunId).toBe(expected);
+      expect(new TextDecoder().decode(new TextEncoder().encode(maskedRunId))).toBe(maskedRunId);
+    },
+  );
+
+  it("does not reject completion when optional task tracking is absent and finalization throws", async () => {
+    const persist = vi.fn();
+    const persistOrThrow = vi.fn();
+    const warn = vi.fn();
+    const entry = createRunEntry();
+    const runs = new Map([[entry.runId, entry]]);
+    taskExecutorMocks.completeTaskRunByRunId.mockImplementation(() => {
+      throw new DetachedTaskLegacyRuntimeError("task store boom", {
+        cause: new Error("task store boom"),
+      });
+    });
+
+    const controller = createLifecycleController({ entry, runs, persist, persistOrThrow, warn });
+
+    await expect(completeRun(controller, entry)).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(persistOrThrow).toHaveBeenCalledTimes(1);
+    expect(persistOrThrow.mock.invocationCallOrder[0]).toBeLessThan(
+      taskExecutorMocks.completeTaskRunByRunId.mock.invocationCallOrder[0]!,
+    );
+    const [warning, warningFields] = firstCall(warn);
+    expect(warning).toBe("failed to finalize subagent background task state");
+    expectFields(warningFields, {
+      error: { name: "Error", message: "task store boom" },
+      runId: "***",
+      childSessionKey: "agent:main:…",
+      outcomeStatus: "ok",
+    });
+    expect(helperMocks.persistSubagentSessionTiming).toHaveBeenCalledTimes(1);
+    expect(lifecycleEventMocks.emitSessionLifecycleEvent).toHaveBeenCalledWith({
+      sessionKey: "agent:main:subagent:child",
+      reason: "subagent-status",
+      parentSessionKey: "agent:main:main",
+      label: undefined,
+    });
+  });
+
+  it("joins task finalization and rejects a replaced completion owner before commit", async () => {
+    const entry = createRunEntry();
+    const runs = new Map([[entry.runId, entry]]);
+    const entered = createDeferredCore<void>();
+    const release = createDeferredCore<void>();
+    const commit = vi.fn();
+    taskExecutorMocks.completeTaskRunByRunId.mockImplementation(
+      async (_params: unknown, assertCurrent?: () => void) => {
+        entered.resolve();
+        await release.promise;
+        assertCurrent?.();
+        commit();
+        return [];
+      },
+    );
+    const controller = createLifecycleController({ entry, runs });
+    const completing = completeRun(controller, entry, { triggerCleanup: true });
+    try {
+      await entered.promise;
+      expect(helperMocks.persistSubagentSessionTiming).not.toHaveBeenCalled();
+      runs.set(entry.runId, createRunEntry({ runId: entry.runId }));
+      release.resolve();
+      await expect(completing).rejects.toThrow("subagent task completion owner changed");
+      expect(commit).not.toHaveBeenCalled();
+      expect(helperMocks.persistSubagentSessionTiming).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await completing.catch(() => undefined);
+    }
+  });
 }
