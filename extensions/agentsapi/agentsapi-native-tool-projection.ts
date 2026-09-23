@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
 import {
-  createAgentHarnessToolCallMessage,
-  createAgentHarnessToolResultMessage,
   formatNativeToolOutput,
   formatNativeToolSummary,
   MAX_TOOL_OUTPUT_DELTA_MESSAGES_PER_ITEM,
@@ -16,7 +14,6 @@ import {
   TOOL_PROGRESS_OUTPUT_MAX_CHARS,
   type AgentHarnessAttemptParamsV2,
   type AgentHarnessAttemptResult,
-  type AgentMessage,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { AgentsApiEvent, AgentsApiItem } from "./agentsapi-client.js";
@@ -28,7 +25,7 @@ import {
   type AgentsApiNativeTool,
   type AgentsApiNativeToolOutcome,
 } from "./agentsapi-native-items.js";
-import { appendAgentsApiTranscriptMessage } from "./agentsapi-transcript.js";
+import { recordAgentsApiNativeToolTranscript } from "./agentsapi-transcript.js";
 
 type AgentEvent = Parameters<NonNullable<AgentHarnessAttemptParamsV2["onAgentEvent"]>>[0];
 type NativeToolState = {
@@ -38,7 +35,6 @@ type NativeToolState = {
   terminal: boolean;
   tool?: AgentsApiNativeTool;
   startProjected: boolean;
-  callRecorded: boolean;
   resultRecorded: boolean;
   provisionalTerminalObserved: boolean;
   canonicalTerminalObserved: boolean;
@@ -121,7 +117,6 @@ export class AgentsApiNativeToolProjection {
         tool,
         terminal: false,
         startProjected: false,
-        callRecorded: false,
         resultRecorded: false,
         provisionalTerminalObserved: false,
         canonicalTerminalObserved: false,
@@ -288,11 +283,6 @@ export class AgentsApiNativeToolProjection {
           }
         : {}),
     };
-    const text =
-      output ??
-      (item.type === "web_search_call"
-        ? `Web search ${outcome.status}; native search results are unavailable.`
-        : (outcome.error ?? `${name} ${outcome.status}`));
     const captureTruncated =
       item.output == null && (state.recoveredOutputTruncated || this.output.isTruncated(id));
     this.metas.set(id, {
@@ -304,34 +294,15 @@ export class AgentsApiNativeToolProjection {
     if (canonical && state.canonicalItem && !state.resultRecorded) {
       // Only retrieved items supply durable calls and results. Streamed tool
       // names, arguments, and output may still be partial.
-      if (!state.callRecorded) {
-        await this.append({
-          ...createAgentHarnessToolCallMessage(
-            this.attribution(),
-            { id, name, arguments: args },
-            this.nextTimestamp(),
-          ),
-          idempotencyKey: `${id}:call`,
-        });
-        state.callRecorded = true;
-      }
-      await this.append({
-        ...createAgentHarnessToolResultMessage(
-          { id, name, text, isError: outcome.isError, details },
-          this.nextTimestamp(),
-        ),
-        __openclaw: {
-          toolOutput: {
-            source: "execution",
-            modelInput: "unverified",
-            ...(outcome.outcomeUnknown ? { outcome: "unknown" } : {}),
-            ...(captureTruncated ? { captureTruncated: true } : {}),
-          },
-          ...(item.type === "web_search_call" ? { resultContentSource: "network" } : {}),
-        },
-        idempotencyKey: `${id}:result`,
-      });
-      state.resultRecorded = true;
+      state.resultRecorded = await recordAgentsApiNativeToolTranscript(
+        this.params,
+        this.remoteSessionId,
+        state.turnId,
+        state.canonicalItem,
+        this.assertCurrent,
+        this.nextTimestamp,
+        { enclosingStatus, capturedOutput, captureTruncated },
+      );
     }
     if (
       canonical &&
@@ -539,10 +510,6 @@ export class AgentsApiNativeToolProjection {
     return `agentsapi:${this.remoteSessionId}:${turnId}:${itemId}`;
   }
 
-  private attribution() {
-    return { api: "openai-responses" as const, provider: "openai", modelId: this.params.model.id };
-  }
-
   private async emit(event: AgentEvent): Promise<void> {
     this.assertCurrent();
     if (!this.isPresentationEnabled()) {
@@ -552,9 +519,6 @@ export class AgentsApiNativeToolProjection {
     this.assertCurrent();
   }
 
-  private append<TMessage extends AgentMessage>(message: TMessage): Promise<TMessage> {
-    return appendAgentsApiTranscriptMessage(this.params, message, this.assertCurrent);
-  }
 }
 
 function nativeTerminalProjectionHash(snapshot: Record<string, unknown>): string {

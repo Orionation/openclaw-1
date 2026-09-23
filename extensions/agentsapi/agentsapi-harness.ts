@@ -45,6 +45,7 @@ import { collectOutputs, prepareInputs, uploadInputs } from "./agentsapi-files.j
 import { createAgentsApiMessageProjection } from "./agentsapi-messages.js";
 import { createAgentsApiSession } from "./agentsapi-session.js";
 import { buildAgentsApiToolSurface } from "./agentsapi-tools.js";
+import { recordAgentsApiNativeToolTranscript } from "./agentsapi-transcript.js";
 
 /** Agents API owns native protocol; the host harness runtime owns coordination. */
 export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
@@ -400,6 +401,23 @@ async function runAgentsApiSession(
         projection!.reconcile(turn, items, { presentation: !finalizingProjection }),
       onUsageError: (error) =>
         embeddedAgentLog.warn("Agents API token accounting unavailable", { error }),
+      onReconcileHistory: async (entries) => {
+        for (const { turn, items } of entries) {
+          for (const item of items) {
+            assertProjectionCurrent();
+            await recordAgentsApiNativeToolTranscript(
+              runParams,
+              remoteSessionId!,
+              turn.id,
+              item,
+              assertProjectionCurrent,
+              Date.now,
+              { enclosingStatus: turn.status },
+            );
+            assertProjectionCurrent();
+          }
+        }
+      },
       executeFunction: async (call) => {
         startedToolCount++;
         await emitEvent({

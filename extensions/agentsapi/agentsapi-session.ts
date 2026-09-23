@@ -20,6 +20,7 @@ export function createAgentsApiSession(options: {
   assertCurrent: () => void;
   onEvent: (event: AgentsApiEvent) => void | Promise<void>;
   onReconcile?: (turn: Turn, items: AgentsApiItem[]) => Promise<void>;
+  onReconcileHistory?: (entries: Array<{ turn: Turn; items: AgentsApiItem[] }>) => Promise<void>;
   onSettled?: () => void;
   onUsageError?: (error: unknown) => void;
   executeFunction?: (call: AgentsApiFunctionCall) => Promise<FunctionExecutionResult>;
@@ -129,9 +130,21 @@ export function createAgentsApiSession(options: {
     const turns = await readAdmittedTurns(readClient, readSignal);
     const entries: Array<{ turn: Turn; items: AgentsApiItem[] }> = [];
     const inputItems = new Set<string>();
-    for (const turn of turns) {
-      const items = await readClient.items(sessionId, turn.id, readSignal);
+    const itemsByTurn = new Map<string, AgentsApiItem[]>();
+    if (turns.length || baselineTurnId) {
+      const savedItems = await readClient.items(sessionId, undefined, readSignal);
       readSignal.throwIfAborted();
+      for (const item of savedItems) {
+        if (!item.turn_id) {
+          continue;
+        }
+        const items = itemsByTurn.get(item.turn_id) ?? [];
+        items.push(item);
+        itemsByTurn.set(item.turn_id, items);
+      }
+    }
+    for (const turn of turns) {
+      const items = itemsByTurn.get(turn.id) ?? [];
       for (const item of items) {
         if (item.turn_id && item.turn_id !== turn.id) {
           throw new Error("Agents API saved item belongs to a different turn");
@@ -147,7 +160,7 @@ export function createAgentsApiSession(options: {
     for (const id of inputItems) {
       observedInputItems.add(id);
     }
-    return { turns, entries };
+    return { turns, entries, itemsByTurn };
   };
   const projectSavedState = async (
     entries: Array<{ turn: Turn; items: AgentsApiItem[] }>,
@@ -158,6 +171,32 @@ export function createAgentsApiSession(options: {
       await options.onReconcile?.(turn, items);
       readSignal.throwIfAborted();
     }
+  };
+  const reconcilePriorHistory = async (
+    readClient: AgentsApiClient,
+    readSignal: AbortSignal,
+    itemsByTurn: Map<string, AgentsApiItem[]>,
+  ) => {
+    if (!baselineTurnId || !options.onReconcileHistory) {
+      return;
+    }
+    const turns = await readClient.turns(sessionId, readSignal);
+    readSignal.throwIfAborted();
+    const baselineIndex = turns.findIndex((turn) => turn.id === baselineTurnId);
+    if (baselineIndex < 0) {
+      throw new Error("Agents API historical reconciliation lost its baseline turn");
+    }
+    const priorTurns = turns.slice(0, baselineIndex + 1).filter((turn) => isTerminalTurn(turn.status));
+    if (!priorTurns.length) {
+      return;
+    }
+    // Historical facts repair the retained conversation without entering this
+    // attempt's admission, live presentation, tool lifecycle, or token accounting.
+    await options.onReconcileHistory(priorTurns.map((turn) => ({
+      turn,
+      items: itemsByTurn.get(turn.id) ?? [],
+    })));
+    readSignal.throwIfAborted();
   };
   const rememberItemTurn = (itemId: string, turnId: string) => {
     const previous = itemTurnIds.get(itemId);
@@ -315,6 +354,10 @@ export function createAgentsApiSession(options: {
           options.onSettled?.();
         }
         if (settled || recover) {
+          if (settled) {
+            await reconcilePriorHistory(client, signal, snapshot.itemsByTurn);
+            assertCurrent();
+          }
           await projectSavedState(snapshot.entries, signal);
           assertCurrent();
         }
@@ -532,6 +575,7 @@ export function createAgentsApiSession(options: {
         throw new Error("Agents API canonical cleanup requires native work to be retired");
       }
       const snapshot = await readSavedState(cleanupClient, cleanupSignal);
+      await reconcilePriorHistory(cleanupClient, cleanupSignal, snapshot.itemsByTurn);
       await projectSavedState(snapshot.entries, cleanupSignal);
       return snapshot.turns.at(-1);
     },

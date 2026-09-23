@@ -166,8 +166,15 @@ export class AgentsApiMessageProjection {
         }
       }
     }
-    if (event.turn?.usage && event.type === "agent.session.turn.completed") {
-      this.recordTurnUsage(event.turn);
+    if (
+      event.turn?.subagent_id === null &&
+      [
+        "agent.session.turn.completed",
+        "agent.session.turn.failed",
+        "agent.session.turn.cancelled",
+      ].includes(event.type)
+    ) {
+      this.recordTurnUsage({ ...event.turn, usage: event.usage ?? event.turn.usage });
     }
     if (event.item) {
       const turnId =
@@ -521,7 +528,7 @@ export class AgentsApiMessageProjection {
     if (this.canonicalUsageRecorded) {
       return;
     }
-    const usage = normalizeUsage(turn.usage);
+    const usage = normalizeUsage(turn.usage) ?? this.usageByTurn.get(turn.id);
     if (!usage) {
       return;
     }

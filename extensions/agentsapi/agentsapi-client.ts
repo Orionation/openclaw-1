@@ -507,12 +507,20 @@ export class AgentsApiClient {
     }
   }
 
-  async items(sessionId: string, turnId: string, signal: AbortSignal): Promise<AgentsApiItem[]> {
+  async items(
+    sessionId: string,
+    turnId: string | undefined,
+    signal: AbortSignal,
+  ): Promise<AgentsApiItem[]> {
     const items: AgentsApiItem[] = [];
     const pages = this.sessions.items.list(sessionId, { order: "asc", limit: 100 }, { signal });
     for await (const page of (await pages).iterPages()) {
       this.assertCurrent();
-      items.push(...page.data.filter((item) => item.turn_id === turnId).map((item) => itemSchema.parse(item)));
+      items.push(
+        ...page.data
+          .filter((item) => turnId === undefined || item.turn_id === turnId)
+          .map((item) => itemSchema.parse(item)),
+      );
       if (page.has_more && !page.hasNextPage()) {
         throw new Error("Agents API items page has no continuation cursor");
       }
