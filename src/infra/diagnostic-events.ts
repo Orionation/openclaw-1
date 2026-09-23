@@ -4,6 +4,10 @@ import type { EmbeddedAgentExecutionPhase } from "../agents/embedded-agent-runne
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { TalkBrain, TalkEventType, TalkMode, TalkTransport } from "../talk/talk-events.js";
 import {
+  admitDiagnosticPrivateData,
+  projectDiagnosticEventContent,
+} from "./diagnostic-content-admission.js";
+import {
   isInternalDiagnosticEventInterested,
   resetInternalDiagnosticEventListenerPresence,
   setInternalDiagnosticEventListenerCounts,
@@ -1350,11 +1354,12 @@ type EmitDiagnosticEventOptions = {
 };
 
 function emitDiagnosticEventWithTrust(
-  event: DiagnosticDispatchInput,
+  input: DiagnosticDispatchInput,
   trusted: boolean,
   options: EmitDiagnosticEventOptions = {},
 ) {
   const state = getDiagnosticEventsState();
+  const event = projectDiagnosticEventContent(input);
   if (trusted && isToolExecutionEventInput(event)) {
     dispatchTrustedToolExecutionEvent(state, event);
   }
@@ -1366,7 +1371,8 @@ function emitDiagnosticEventWithTrust(
   }
 
   const enriched = enrichDiagnosticEvent(state, event);
-  const { hostPluginId, internal = false, privateData } = options;
+  const { hostPluginId, internal = false } = options;
+  const privateData = admitDiagnosticPrivateData(event, options.privateData);
   const trustedTraceContext = options.trustedTraceContext === true;
   const metadata: InternalDiagnosticEventMetadata = {
     ...(internal ? createInternalDiagnosticMetadata(trusted) : { trusted }),
@@ -1536,7 +1542,7 @@ export function emitTrustedSkillUsedDiagnosticEvent(
   const queued = {
     event: enrichDiagnosticEvent(state, event),
     metadata: { trusted: true },
-    privateData,
+    privateData: admitDiagnosticPrivateData(event, privateData),
     trustedListenersOnly: true,
   } satisfies QueuedDiagnosticEvent;
   if (state.asyncQueue.length >= MAX_ASYNC_DIAGNOSTIC_EVENTS) {
@@ -1553,20 +1559,7 @@ export function emitTrustedDiagnosticEventWithPrivateData(
   privateData?: DiagnosticEventPrivateData,
 ) {
   const coreModelRequestLifecycle = consumeCoreModelRequestLifecycleDiagnosticEvent(event);
-  if (!privateData || !Object.hasOwn(privateData, "hostPluginId")) {
-    emitDiagnosticEventWithTrust(event, true, { coreModelRequestLifecycle, privateData });
-    return;
-  }
-  // Plugin-facing emitters may provide trusted private content, but host attribution
-  // is reserved for the object-identity provenance consumed above.
-  const sanitized = {
-    ...(privateData as DiagnosticEventPrivateData & { hostPluginId?: unknown }),
-  } as Record<string, unknown>;
-  delete sanitized.hostPluginId;
-  emitDiagnosticEventWithTrust(event, true, {
-    coreModelRequestLifecycle,
-    privateData: sanitized as DiagnosticEventPrivateData,
-  });
+  emitDiagnosticEventWithTrust(event, true, { coreModelRequestLifecycle, privateData });
 }
 
 /** Emits a trusted canonical security event from core-owned enforcement boundaries. */

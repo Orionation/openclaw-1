@@ -346,6 +346,7 @@ export function createClaudeCliModelCallDiagnostics(params: {
   const now = params.now ?? (() => Date.now());
   const capture = resolveDiagnosticModelContentCapturePolicy(
     params.context.params.config ?? params.context.contextEngineConfig,
+    params.context.params.sessionKey,
   );
   const contextWindow = params.context.contextWindowInfo;
   const trace = freezeDiagnosticTraceContext(createDiagnosticTraceContextFromActiveScope());
