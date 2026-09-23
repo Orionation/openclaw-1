@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createConfigRuntimeEnv,
+  createConfigRuntimeEnvBase,
+} from "../../config/config-env-vars.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";
@@ -14,6 +18,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import { stripProposalFrontmatterForSkill } from "./frontmatter.js";
 import { createSkillProposalEvent } from "./plugin-hooks.js";
 import * as proposalGeneration from "./proposal-generation.js";
@@ -27,6 +32,7 @@ import {
   reviseSkillProposal,
 } from "./service.js";
 import { createSkillProposalRollback } from "./service.test-support.js";
+import { captureSkillWorkshopStoreOptions } from "./store-client.js";
 import { parseSkillProposalEvaluation } from "./store-record.js";
 import { writeSkillProposalRollback } from "./store-rollback.js";
 import { appendSkillProposalEvent } from "./store-sqlite-event.js";
@@ -59,6 +65,43 @@ afterEach(async () => {
 });
 
 describe("Skill Workshop SQLite store", () => {
+  it.each([
+    { platform: "win32", stateKey: "openclaw_state_dir" },
+    { platform: "linux", stateKey: "OPENCLAW_STATE_DIR" },
+  ] as const)(
+    "preserves $platform environment semantics when capturing proposal storage",
+    (fixture) => {
+      withMockedPlatform(fixture.platform, () => {
+        const config = { env: { vars: { WORKSHOP_CAPTURE_VALUE: "configured" } } };
+        const rawEnv: NodeJS.ProcessEnv = {
+          ...testState.env,
+          HOME: testState.path("fallback-home"),
+          USERPROFILE: testState.path("fallback-home"),
+        };
+        delete rawEnv.OPENCLAW_STATE_DIR;
+        rawEnv[fixture.stateKey] = testState.stateDir;
+        const env = createConfigRuntimeEnv(config, rawEnv);
+        expect(proposalGeneration.resolveSkillWorkshopStateDir({ env })).toBe(testState.stateDir);
+
+        const captured = captureSkillWorkshopStoreOptions({ env, config, agentId: "main" });
+        env[fixture.stateKey] = testState.path("replaced-state");
+
+        expect.soft(captured.stateDir).toBe(testState.stateDir);
+        expect.soft(captured.env.OPENCLAW_STATE_DIR).toBe(testState.stateDir);
+        expect
+          .soft(captured.execution.context.environment.OPENCLAW_STATE_DIR)
+          .toBe(testState.stateDir);
+        expect
+          .soft(captured.execution.context.admission.databasePath)
+          .toBe(path.join(testState.stateDir, "state", "openclaw.sqlite"));
+        expect
+          .soft(createConfigRuntimeEnvBase(config, captured.env).WORKSHOP_CAPTURE_VALUE)
+          .toBeUndefined();
+        expect(env.WORKSHOP_CAPTURE_VALUE).toBe("configured");
+      });
+    },
+  );
+
   it("retains proposal inputs and storage routing across generation staging without caller SQL", async () => {
     const seed = await proposeCreateSkill({
       workspaceDir: testState.stateDir,

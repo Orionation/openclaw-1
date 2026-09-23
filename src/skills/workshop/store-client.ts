@@ -1,3 +1,4 @@
+import { cloneEnvWithPlatformSemantics } from "../../config/config-env-vars.js";
 import type { SqliteWorkerStore } from "../../infra/sqlite-worker-contract.js";
 import { createSqliteWorkerWriteAdmission } from "../../infra/sqlite-worker-store.js";
 import type { OpenClawStateLeaseIdentity } from "../../state/openclaw-state-lease-store.js";
@@ -9,7 +10,7 @@ import { databaseOptions, type SkillWorkshopStoreOptions } from "./store-sqlite-
 import type { SkillWorkshopExecutionOperations } from "./store.worker-contract.js";
 
 export function captureSkillWorkshopStoreOptions<T extends SkillWorkshopStoreOptions>(options: T) {
-  const env = { ...(options.env ?? process.env) };
+  const env = cloneEnvWithPlatformSemantics(options.env ?? process.env);
   const stateDir = resolveSkillWorkshopStateDir({ ...options, env });
   const execution = options.execution ?? {
     context: captureOpenClawStateWorkerContext(databaseOptions({ env, stateDir })),
