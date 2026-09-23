@@ -12,3 +12,4 @@ export {
   emitAgentHarnessAttemptEvent,
   createAgentHarnessAttemptLifecycle,
 } from "../agents/harness/attempt-events.js";
+export { selectSupportedReasoningEffort } from "../agents/harness/reasoning-effort.js";
