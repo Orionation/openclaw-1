@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/acp/control-plane/manager.test.ts",
   "src/config/sessions/disk-budget.physical-usage.test.ts",
   "src/agents/agent-bundle-mcp-requester-connect.read.test.ts",
   "src/agents/agent-tools.before-tool-call.embedded-mode.test.ts",
@@ -235,6 +236,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/audit/audit-event-store.message.test.ts",
   "src/audit/audit-event-writer.test.ts",
   "src/audit/audit-event-writer.worker.test.ts",
+  "src/audit/execution-decision-cursors.test.ts",
   "src/audit/execution-decision-work.test.ts",
   "src/audit/execution-identity-context.test.ts",
   "src/agents/tools/sessions-access.test.ts",
@@ -358,6 +360,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/openclaw-agent-execution.integrity.test.ts",
   "src/state/openclaw-agent-execution-cleanup.test.ts",
   "src/sessions/session-state-events.test.ts",
+  "src/sessions/session-created.test.ts",
   "src/sessions/session-upstream-links.test.ts",
   "src/sessions/session-upstream-monitor.test.ts",
   "test/canonical-descendant.integration.test.ts",
@@ -409,6 +412,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/tasks/task-registry-flow-sync.test.ts",
   "src/tasks/task-registry-live-flow.worker.test.ts",
   "src/tasks/task-registry.restore-ownership.test.ts",
+  "src/tasks/task-run-owner.test.ts",
   "src/agents/agent-harness-completion-delivery.test.ts",
   "src/agents/openclaw-tools.subagents.scope.test.ts",
   "src/agents/media-generation-task-status.cold.test.ts",

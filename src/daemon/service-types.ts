@@ -250,7 +250,7 @@ export type GatewayServiceManagedOverrides = {
   environment?: true | { keys?: string[]; resetInline?: true; resetFiles?: true };
 };
 
-/** Effective platform service command and, when externally owned, its managed base definition. */
+/** Effective platform command with its authored base and inspected override metadata. */
 export type GatewayServiceCommandConfig = GatewayServiceCommandSnapshot & {
   sourcePath?: string;
   definitionPaths?: string[];
@@ -263,6 +263,15 @@ export function resolveManagedGatewayServiceCommand(
   command: GatewayServiceCommandConfig | null | undefined,
 ): GatewayServiceCommandSnapshot | null {
   return command?.managedDefinition ?? command ?? null;
+}
+
+/** Empty inspected overrides are ordinary metadata; a base without inspection is unknown. */
+export function hasGatewayServiceDefinitionOverrides(
+  command: GatewayServiceCommandConfig | null | undefined,
+): boolean {
+  return command?.managedOverrides
+    ? Object.keys(command.managedOverrides).length > 0
+    : Boolean(command?.managedDefinition);
 }
 
 /** Operator-owned launcher overrides cannot be repaired by rewriting the managed base. */
