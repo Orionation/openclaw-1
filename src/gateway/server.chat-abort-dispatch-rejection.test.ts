@@ -340,7 +340,8 @@ describe("gateway WebSocket chat abort ownership", () => {
 
   test("does not let a late abort replace an established dispatch error", async () => {
     const sessionDirectory = temporaryDirectories.make("openclaw-chat-error-late-abort-");
-    testState.sessionStorePath = path.join(sessionDirectory, "sessions.json");
+    const storePath = path.join(sessionDirectory, "sessions.json");
+    testState.sessionStorePath = storePath;
     await writeSessionStore({
       entries: {
         main: {
@@ -354,6 +355,7 @@ describe("gateway WebSocket chat abort ownership", () => {
     const dispatchRelease = createDeferred();
     const runId = "real-websocket-dispatch-error-before-late-abort";
     const terminalStates = trackChatTerminalStates(socket, runId);
+    let admissionRelease: Promise<void> | undefined;
 
     try {
       await connectOk(socket);
@@ -375,34 +377,41 @@ describe("gateway WebSocket chat abort ownership", () => {
         timeout: 2_000,
       });
 
-      const errorFrame = onceMessage(
-        socket,
-        (frame) =>
-          frame.type === "event" &&
-          frame.event === "chat" &&
-          frame.payload?.runId === runId &&
-          frame.payload?.state === "error",
-        2_000,
-      );
-      dispatchRelease.resolve();
-      await expect(errorFrame).resolves.toMatchObject({
-        payload: { runId, state: "error" },
+      admissionRelease = getSessionWorkAdmissionRelease({
+        scope: storePath,
+        identities: ["main", "agent:main:main", "sess-main"],
       });
+      expect(admissionRelease).toBeDefined();
+      // Error publication follows durable lifecycle work and precedes admission release.
+      // Join that owner so the late abort cannot race storage against a timer.
+      dispatchRelease.resolve();
+      await admissionRelease;
 
+      // This response follows the published terminal on the same socket.
       const lateAbort = await rpcReq(socket, "chat.abort", {
         sessionKey: "main",
         runId,
       });
       expect(lateAbort.ok).toBe(true);
       expect(lateAbort.payload).toMatchObject({ ok: true, aborted: false, runIds: [] });
+      expect(terminalStates).toEqual(["error"]);
 
       const replay = await rpcReq(socket, "chat.send", sendParameters);
       expect(replay.ok).toBe(false);
       expect(replay.payload).toMatchObject({ runId, status: "error" });
       expect(terminalStates).toEqual(["error"]);
     } finally {
+      admissionRelease ??= getSessionWorkAdmissionRelease({
+        scope: storePath,
+        identities: ["main", "agent:main:main", "sess-main"],
+      });
       dispatchRelease.resolve();
-      socket.close();
+      await runQaGatewayFixture(
+        async () => {
+          await admissionRelease;
+        },
+        () => socket.close(),
+      );
     }
   });
 
