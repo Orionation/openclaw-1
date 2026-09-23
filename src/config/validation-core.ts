@@ -33,7 +33,10 @@ import {
 } from "./legacy.default-agent-owner.js";
 import { migratePersistedImplicitMainRoster } from "./legacy.roster.js";
 import { materializeRuntimeConfig } from "./materialize.js";
-import { createModelPolicyRefValidator, parseModelPolicyWildcardRef } from "./model-policy-ref.js";
+import {
+  createModelPolicyRefValidator,
+  parseOperatorModelPolicyWildcardRef,
+} from "./model-policy-ref.js";
 import { isBuiltInModelProviderOverlayId } from "./model-provider-overlay-ids.js";
 import type { ConfigValidationIssue, OpenClawConfig } from "./types.js";
 import { collectRawBundledChannelConfigIssues } from "./validation-channel-rules.js";
@@ -265,10 +268,7 @@ function collectModelPolicyAllowIssues(config: OpenClawConfig): ConfigValidation
     }
     const isValidRef = createModelPolicyRefValidator(defaultModels, agentModels);
     for (const [index, raw] of refs.entries()) {
-      if (
-        isValidRef(raw) ||
-        (allowModelPrefix && parseModelPolicyWildcardRef(raw, { allowModelPrefix }))
-      ) {
+      if (isValidRef(raw) || (allowModelPrefix && parseOperatorModelPolicyWildcardRef(raw))) {
         continue;
       }
       issues.push({
