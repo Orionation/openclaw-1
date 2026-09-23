@@ -192,10 +192,13 @@ export class AgentsApiNativeToolProjection {
           toolCallId: id,
           phase: "delta",
           name: state.tool?.name ?? "bash",
-          title: state.item.command ?? "Command output",
+          title:
+            typeof state.tool?.args.command === "string"
+              ? state.tool.args.command
+              : "Command output",
           output: delta.length > remaining ? `${text}\n...(truncated)...` : text,
           status: "running",
-          ...(typeof state.item.cwd === "string" ? { cwd: state.item.cwd } : {}),
+          ...(typeof state.tool?.args.cwd === "string" ? { cwd: state.tool.args.cwd } : {}),
         },
       });
     }
@@ -355,14 +358,14 @@ export class AgentsApiNativeToolProjection {
     }
     const commandFacts = commandBearing
       ? {
-          title: item.command ?? "Command output",
+          title: typeof args.command === "string" ? args.command : "Command output",
           ...(!savedItemUnavailable && typeof item.exit_code === "number"
             ? { exitCode: item.exit_code }
             : {}),
           ...(!savedItemUnavailable && typeof item.duration_ms === "number"
             ? { durationMs: item.duration_ms }
             : {}),
-          ...(typeof item.cwd === "string" ? { cwd: item.cwd } : {}),
+          ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
         }
       : undefined;
     const presentationOutput =
