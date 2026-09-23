@@ -37,14 +37,23 @@ type ModelPolicyWildcardRef = {
 };
 
 /** Parse and canonicalize a segment-boundary model-policy prefix wildcard. */
-export function parseModelPolicyWildcardRef(raw: string): ModelPolicyWildcardRef | null {
+export function parseModelPolicyWildcardRef(
+  raw: string,
+  options: { allowModelPrefix?: boolean } = {},
+): ModelPolicyWildcardRef | null {
   const trimmed = raw.trim();
   // Wildcard keys match on segment boundaries, so normalize boundary padding
   // before building the canonical key used by policy matching.
   const segments = trimmed.split("/").map((segment) => segment.trim());
+  const last = segments.at(-1) ?? "";
+  const modelPrefix = options.allowModelPrefix === true && last.endsWith("*") && last !== "*";
+  const literalSegments = modelPrefix
+    ? [...segments.slice(0, -1), last.slice(0, -1)]
+    : segments.slice(0, -1);
   if (
-    segments.at(-1) !== "*" ||
-    !hasValidSegments(segments.slice(0, -1), {
+    segments.length < 2 ||
+    (last !== "*" && !modelPrefix) ||
+    !hasValidSegments(literalSegments, {
       min: 1,
     })
   ) {
