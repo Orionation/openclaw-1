@@ -1,6 +1,5 @@
 import path from "node:path";
 import { resolveBunGlobalInstallOwner } from "./detect-package-manager.js";
-import type { ResolvedGlobalInstallTarget } from "./update-global.js";
 
 /**
  * Resolves pnpm's global-dir from its active global package root.
@@ -25,7 +24,11 @@ export function resolvePnpmGlobalDirFromGlobalRoot(globalRoot?: string | null): 
 
 /** Native activation replaces the complete manager project, not only its package directory. */
 export function resolveNativePackageProjectRoot(
-  target: ResolvedGlobalInstallTarget,
+  target: {
+    manager: "npm" | "pnpm" | "bun";
+    globalRoot: string | null;
+    packageRoot: string | null;
+  },
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
   return target.manager === "pnpm"
