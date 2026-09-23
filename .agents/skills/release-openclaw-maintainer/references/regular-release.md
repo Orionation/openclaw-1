@@ -33,9 +33,9 @@ Record and reuse the full trusted Tooling SHA. Beta-publish and default
 stable-publish use `release_profile=beta`, `run_release_soak=false`; require
 `npm-beta-v1` for a qualifying canonical beta target, otherwise retain
 historical full behavior. As each child completes, rerun its failed jobs at
-most twice (`gh run rerun <child> --failed`, or
-`pnpm frv continue --failed --run <parent>` once children are terminal) without
-waiting for the operator. A lane that fails twice on a test the candidate did
+most twice (`pnpm frv rerun-failed --run <parent>`, raw form
+`gh run rerun <child> --failed`, then `pnpm frv continue --failed --run <parent>`
+to seal) without waiting for the operator. A lane that fails twice on a test the candidate did
 not touch, with no product cause found in the candidate delta, is flaky:
 record it, fix `main` in parallel, never re-cut. Only a confirmed product
 defect that a required lane blocks on creates a new Code SHA: the
@@ -45,8 +45,9 @@ proven by diagnosis. A flake, an advisory lane, or a publish-tooling re-tag
 never does. Tooling,
 credentials, infrastructure or wrapper failure keeps the candidate and recovers
 the failed surface. Use [publication recovery](publication-recovery.md) for
-classification. While the parent runs, apply the runner-priority recipe from
-`docs/reference/RELEASING.md` and restore cancelled runs afterwards.
+classification. While the parent runs, hold runner priority
+(`pnpm frv prioritize --run <parent>`, or the raw recipe in
+`docs/reference/RELEASING.md`) and restore cancelled runs after the seal.
 
 An early `OpenClaw Performance` run is optional beta confidence:
 `target_ref=<code-sha>`, `profile=release`, `repeat=3`, deep profiling/live OpenAI
