@@ -20,19 +20,50 @@ add it yet:
 
 1. What observable behavior, invariant, or independent contract does it protect?
 2. What credible regression makes it fail?
-3. Why does existing coverage not already catch that failure? Prefer extending a
-   table-driven case or shared fixture over a near-duplicate test; consolidate
-   duplicated setup in the same change.
+3. Why does existing coverage not already catch that failure? Each contract has
+   one primary test owner at the strongest boundary; another layer needs its
+   own distinct risk, such as a transport or lifecycle failure the owner cannot
+   reach. Prefer extending a table-driven case or shared fixture over a
+   near-duplicate test; consolidate duplicated setup in the same change.
 4. Does it need a production seam (export, flag, wrapper, injection hook) that no
    production caller needs? If yes, move the test to the real boundary instead.
 
-A test that would break under behavior-preserving refactoring is asserting
-implementation, not behavior; rewrite it at the owning boundary before landing
-it.
+Then check the test against every [junk pattern](#junk-patterns); a match fails
+the gate unless the [retention bar](#retention-bar) names the contract it
+independently guards. A test that would break under behavior-preserving
+refactoring is asserting implementation, not behavior; rewrite it at the
+owning boundary before landing it.
 
 Bug regression tests must fail on the pre-fix code for the intended reason and
 pass after the owner-boundary repair. A regression test that never demonstrably
-failed proves the mock, not the fix.
+failed proves the mock, not the fix. One regression at the owner boundary
+covers the bug; do not replay the same scenario at every layer it crosses.
+
+## Junk patterns
+
+The shared checklist for both modes: the authoring gate rejects a new test that
+matches one, and audits hunt for existing tests that do.
+
+- assertion-free coverage probes;
+- self-comparisons and identity copiers;
+- copied fixtures, inventories, manifests, or export lists;
+- exact source, import, or string greps;
+- private predicate or call-shape tests duplicated at real boundaries;
+- duplicate invocations of the same contract;
+- provider-local replays of shared helpers;
+- tests whose only purpose is preserving test-only exports, globals, or wrappers;
+- dead production code whose only callers are tests;
+- expected values produced by the helper or renderer under test;
+- mocks that implement the asserted behavior, or one identical mock standing in
+  for different APIs;
+- fixtures that supply the receipt, admission, or callback ordering the owner
+  should produce, or persistence asserted against a store the path never writes;
+- capability tests that restate declared flags instead of exercising the
+  delivery or acknowledgement the flag promises;
+- negative controls that pass for an unrelated reason, such as a denial from a
+  different guard or a rejection the production path never reaches;
+- names or fixtures that promise more than the input exercises, such as a
+  "retires the window" test asserting the window was not cleared.
 
 ## Value bar
 
@@ -58,24 +89,7 @@ run parallel discovery lanes when available:
 - a cross-cutting pattern sweep.
 
 Outside campaign mode, prefer a few high-confidence candidates over a large
-speculative inventory. Look for:
-
-- assertion-free coverage probes;
-- self-comparisons and identity copiers;
-- copied fixtures, inventories, manifests, or export lists;
-- exact source, import, or string greps;
-- private predicate or call-shape tests duplicated at real boundaries;
-- duplicate invocations of the same contract;
-- provider-local replays of shared helpers;
-- tests whose only purpose is preserving test-only exports, globals, or wrappers;
-- dead production code whose only callers are tests;
-- expected values produced by the helper or renderer under test;
-- mocks that implement the asserted behavior, or one identical mock standing in
-  for different APIs;
-- fixtures that supply the receipt, admission, or callback ordering the owner
-  should produce, or persistence asserted against a store the path never writes;
-- names or fixtures that promise more than the input exercises, such as a
-  "retires the window" test asserting the window was not cleared.
+speculative inventory. Hunt for the [junk patterns](#junk-patterns).
 
 ## Retention bar
 
