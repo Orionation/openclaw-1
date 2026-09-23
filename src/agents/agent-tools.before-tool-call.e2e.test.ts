@@ -17,6 +17,7 @@ import {
   onTrustedInternalDiagnosticEvent,
   resetDiagnosticEventsForTest,
   type DiagnosticEventPayload,
+  type DiagnosticEventPrivateData,
   type DiagnosticToolLoopEvent,
 } from "../infra/diagnostic-events.js";
 import { MAX_PLUGIN_APPROVAL_TIMEOUT_MS } from "../infra/plugin-approvals.js";
