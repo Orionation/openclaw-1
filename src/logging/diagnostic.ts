@@ -46,6 +46,7 @@ import {
 } from "./diagnostic-session-attention.js";
 import {
   formatCronSessionDiagnosticFields,
+  formatSessionActivityLogFields,
   resolveCronSessionDiagnosticContext,
 } from "./diagnostic-session-context.js";
 import {
@@ -62,6 +63,8 @@ import {
   retireDiagnosticSessionObservations,
   getDiagnosticSessionState,
   isDiagnosticSessionStateCurrent,
+  isIncognitoDiagnosticSession,
+  resolveDiagnosticSessionKey,
   pruneDiagnosticSessionStates,
   resetDiagnosticSessionStateForTest,
   type SessionRef,
@@ -161,7 +164,9 @@ async function recoverStuckSession(
   return loadStuckSessionRecoveryRuntime()
     .then(({ recoverStuckDiagnosticSession }) => recoverStuckDiagnosticSession(params))
     .catch((err: unknown) => {
-      diag.warn(`stuck session recovery unavailable: ${String(err)}`);
+      if (!isIncognitoDiagnosticSession(params)) {
+        diag.warn(`stuck session recovery unavailable: ${String(err)}`);
+      }
       return {
         status: "failed",
         action: "none",
@@ -708,7 +713,10 @@ export function logMessageDispatchCompleted(params: {
   if (!areDiagnosticsEnabledForProcess()) {
     return;
   }
-  if (diag.isEnabled(params.outcome === "error" ? "error" : "debug")) {
+  if (
+    !isIncognitoDiagnosticSession(params) &&
+    diag.isEnabled(params.outcome === "error" ? "error" : "debug")
+  ) {
     const payload = `message dispatch completed: channel=${params.channel ?? "unknown"} sessionId=${
       params.sessionId ?? "unknown"
     } sessionKey=${params.sessionKey ?? "unknown"} source=${params.source} outcome=${
@@ -725,7 +733,7 @@ export function logMessageDispatchCompleted(params: {
   emitDiagnosticEvent({
     type: "message.dispatch.completed",
     sessionId: params.sessionId,
-    sessionKey: params.sessionKey,
+    sessionKey: resolveDiagnosticSessionKey(params),
     channel: params.channel,
     source: params.source,
     durationMs: params.durationMs,
@@ -752,7 +760,7 @@ export function logMessageProcessed(params: {
     return;
   }
   const wantsLog = params.outcome === "error" ? diag.isEnabled("error") : diag.isEnabled("debug");
-  if (wantsLog) {
+  if (wantsLog && !isIncognitoDiagnosticSession(params)) {
     const payload = `message processed: channel=${params.channel} chatId=${
       params.chatId ?? "unknown"
     } messageId=${params.messageId ?? "unknown"} sessionId=${
@@ -774,7 +782,7 @@ export function logMessageProcessed(params: {
     chatId: params.chatId,
     messageId: params.messageId,
     sessionId: params.sessionId,
-    sessionKey: params.sessionKey,
+    sessionKey: resolveDiagnosticSessionKey(params),
     ...(params.agentId ? { agentId: params.agentId } : {}),
     durationMs: params.durationMs,
     outcome: params.outcome,
@@ -840,7 +848,7 @@ export function logSessionStateChange(
     state.queueDepth = Math.max(0, state.queueDepth - 1);
     state.activeQueuedTurn = false;
   }
-  if (!isProbeSession && diag.isEnabled("debug")) {
+  if (!isProbeSession && !isIncognitoDiagnosticSession(state) && diag.isEnabled("debug")) {
     diag.debug(
       `session state: sessionId=${state.sessionId ?? "unknown"} sessionKey=${
         state.sessionKey ?? "unknown"
@@ -902,34 +910,6 @@ function sessionAttentionFields(params: {
       : {}),
     ...(terminalProgressStale ? { terminalProgressStale: true } : {}),
   };
-}
-
-function formatSessionActivityLogFields(activity: DiagnosticSessionActivitySnapshot): string {
-  const fields: string[] = [];
-  if (activity.lastProgressReason) {
-    fields.push(`lastProgress=${activity.lastProgressReason}`);
-  }
-  if (activity.lastProgressAgeMs !== undefined) {
-    fields.push(`lastProgressAge=${Math.round(activity.lastProgressAgeMs / 1000)}s`);
-  }
-  if (activity.activeToolName) {
-    fields.push(`activeTool=${activity.activeToolName}`);
-  }
-  if (activity.activeToolCallId) {
-    fields.push(`activeToolCallId=${activity.activeToolCallId}`);
-  }
-  if (activity.activeToolAgeMs !== undefined) {
-    fields.push(`activeToolAge=${Math.round(activity.activeToolAgeMs / 1000)}s`);
-  }
-  if (activity.repeatedRequestNoProgressAgeMs !== undefined) {
-    fields.push(
-      `repeatedRequestNoProgressAge=${Math.round(activity.repeatedRequestNoProgressAgeMs / 1000)}s`,
-    );
-  }
-  if (isTerminalDiagnosticProgressReason(activity.lastProgressReason)) {
-    fields.push("terminalProgressStale=true");
-  }
-  return fields.join(" ");
 }
 
 function logSessionAttention(
@@ -1001,31 +981,33 @@ function logSessionAttention(
     // Warning backoff must not delay a recovery already justified by this observation.
     return recovery;
   }
-  const label =
-    classification.eventType === "session.stuck"
-      ? "stuck session"
-      : classification.eventType === "session.stalled"
-        ? "stalled session"
-        : "long-running session";
-  const activityFields = formatSessionActivityLogFields(activity);
-  const sessionFields = formatCronSessionDiagnosticFields(
-    resolveCronSessionDiagnosticContext({
-      sessionKey: params.sessionKey,
-      activeSessionId: params.sessionId,
-    }),
-  );
-  const detailFields = [activityFields, sessionFields].filter(Boolean).join(" ");
-  const message = `${label}: sessionId=${params.sessionId ?? "unknown"} sessionKey=${
-    params.sessionKey ?? "unknown"
-  } state=${params.expectedState} age=${Math.round(params.ageMs / 1000)}s queueDepth=${
-    queueDepth
-  } reason=${classification.reason} classification=${classification.classification}${
-    classification.activeWorkKind ? ` activeWorkKind=${classification.activeWorkKind}` : ""
-  }${detailFields ? ` ${detailFields}` : ""} recovery=${recovery ? "checking" : "none"}`;
-  if (classification.eventType === "session.long_running" && queueDepth <= 0) {
-    diag.debug(message);
-  } else {
-    diag.warn(message);
+  if (!isIncognitoDiagnosticSession(state)) {
+    const label =
+      classification.eventType === "session.stuck"
+        ? "stuck session"
+        : classification.eventType === "session.stalled"
+          ? "stalled session"
+          : "long-running session";
+    const activityFields = formatSessionActivityLogFields(activity);
+    const sessionFields = formatCronSessionDiagnosticFields(
+      resolveCronSessionDiagnosticContext({
+        sessionKey: params.sessionKey,
+        activeSessionId: params.sessionId,
+      }),
+    );
+    const detailFields = [activityFields, sessionFields].filter(Boolean).join(" ");
+    const message = `${label}: sessionId=${params.sessionId ?? "unknown"} sessionKey=${
+      params.sessionKey ?? "unknown"
+    } state=${params.expectedState} age=${Math.round(params.ageMs / 1000)}s queueDepth=${
+      queueDepth
+    } reason=${classification.reason} classification=${classification.classification}${
+      classification.activeWorkKind ? ` activeWorkKind=${classification.activeWorkKind}` : ""
+    }${detailFields ? ` ${detailFields}` : ""} recovery=${recovery ? "checking" : "none"}`;
+    if (classification.eventType === "session.long_running" && queueDepth <= 0) {
+      diag.debug(message);
+    } else {
+      diag.warn(message);
+    }
   }
   const baseEvent = {
     sessionId: params.sessionId,
