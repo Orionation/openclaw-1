@@ -1,5 +1,7 @@
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
+  captureAgentHarnessCompletionCustody,
+  createAgentHarnessTaskEventSink,
   createAgentHarnessTaskRuntime,
   deliverAgentHarnessTaskCompletion,
 } from "openclaw/plugin-sdk/agent-harness-task-runtime";
@@ -46,6 +48,8 @@ type NativeMonitorConstructor = new (
 ) => NativeMonitor;
 
 export const defaultNativeSubagentMonitorRuntime: NativeSubagentMonitorRuntime = {
+  captureAgentHarnessCompletionCustody,
+  createAgentHarnessTaskEventSink,
   createAgentHarnessTaskRuntime,
   deliverAgentHarnessTaskCompletion,
 };

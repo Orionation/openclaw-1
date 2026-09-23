@@ -1,4 +1,4 @@
-import { parseModelPolicyWildcardRef } from "../config/model-policy-ref.js";
+import { parseOperatorModelPolicyWildcardRef } from "../config/model-policy-ref.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveConfiguredAgentId, resolveAmbientOwnerAgentId } from "./agent-scope-config.js";
@@ -70,7 +70,7 @@ function prepareRefs(refs: readonly string[], resolve: (raw: string) => ModelRef
   const exact = new Map<string, ModelRef>();
   const wildcards = new Set<string>();
   for (const raw of refs) {
-    const wildcard = parseModelPolicyWildcardRef(raw, { allowModelPrefix: true });
+    const wildcard = parseOperatorModelPolicyWildcardRef(raw);
     if (wildcard) {
       wildcards.add(wildcard.key);
     } else {

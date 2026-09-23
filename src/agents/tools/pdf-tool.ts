@@ -44,10 +44,6 @@ import { registerProviderStreamForModel } from "../provider-stream.js";
 import { optionalFiniteNumberSchema } from "../schema/typebox.js";
 import { getModelRegistryRuntime } from "../sessions/model-registry-runtime.js";
 import { readFiniteNumberParam, ToolInputError } from "./common.js";
-import {
-  captureGatewayToolCallerAssertion,
-  getGatewayToolCallerIdentity,
-} from "./gateway-caller-context.js";
 import { coerceImageModelConfig, type ImageModelConfig } from "./image-tool.helpers.js";
 import {
   applyImageModelConfigDefaults,
@@ -689,15 +685,6 @@ export function createPdfTool(options?: {
     description,
     parameters: PdfToolSchema,
     execute: async (_toolCallId, args, signal) => {
-      const operatorAuthority = getGatewayToolCallerIdentity()?.operatorAuthority;
-      const assertCallerCurrent = captureGatewayToolCallerAssertion();
-      assertCallerCurrent?.();
-      operatorAuthority?.assertCurrent();
-      const executionSignal = operatorAuthority?.signal
-        ? signal
-          ? AbortSignal.any([signal, operatorAuthority.signal])
-          : operatorAuthority.signal
-        : signal;
       const reported = createDeferredCore<Awaited<ReturnType<AnyAgentTool["execute"]>>>();
       const parentSignal = getAsyncWorkSignal();
       void trackAsyncWork(async () => {
@@ -711,7 +698,22 @@ export function createPdfTool(options?: {
         const runtimeResources = new AsyncDisposableStack();
         let releaseOperator: (() => void) | undefined;
         try {
-          releaseOperator = operatorAuthority?.retain?.();
+          const { captureAmbientGatewayOperatorAuthority } =
+            await import("../../gateway/operator-invocation-authority.js");
+          const capturedOperator = captureAmbientGatewayOperatorAuthority({
+            missingBindingError: () =>
+              new Error("PDF analysis requires its current Gateway binding."),
+            retainInherited: true,
+          });
+          releaseOperator = capturedOperator.release;
+          const operatorAuthority = capturedOperator.authority;
+          const executionSignal = operatorAuthority?.signal
+            ? signal
+              ? AbortSignal.any([signal, operatorAuthority.signal])
+              : operatorAuthority.signal
+            : signal;
+          capturedOperator.assertInvocationCurrent?.();
+          operatorAuthority?.assertCurrent();
           const suppliedClaim = options?.preparedModelRuntime
             ? retainPreparedModelRuntimeSnapshotResources(options.preparedModelRuntime)
             : undefined;
@@ -728,7 +730,7 @@ export function createPdfTool(options?: {
                   runtimeResources.use(resource);
                 },
                 () => {
-                  assertCallerCurrent?.();
+                  capturedOperator.assertInvocationCurrent?.();
                   operatorAuthority?.assertCurrent();
                   suppliedClaim?.assertOpen();
                   executionSignal?.throwIfAborted();

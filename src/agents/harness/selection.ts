@@ -139,16 +139,20 @@ export async function runAgentHarnessSettledTurnFinalization(
     throw new Error('OpenClaw host authority requires toolsAllow: ["openclaw"]');
   }
   const builtIn = isBuiltInOpenClawAgentHarness(harness);
+  const operatorAuthority = assertHarnessModelPolicySupport(harness, params);
   const modelExecution = builtIn
     ? undefined
     : bindOperatorModelExecution(
-        readRunOperatorAuthority(params),
-        settledAttempt.runtimeModelSelection ?? {
-          provider: params.provider,
-          model: params.modelId,
-        },
+        operatorAuthority,
+        harness.nativeModelPolicySupport === "exact"
+          ? (settledAttempt.runtimeModelSelection ?? {
+              provider: params.provider,
+              model: params.modelId,
+            })
+          : undefined,
       );
   try {
+    modelExecution?.assertCurrent();
     const attemptParams = prepareHarnessFinalizationParams(
       {
         ...internalParams,
@@ -163,9 +167,11 @@ export async function runAgentHarnessSettledTurnFinalization(
     );
     const result = await runAgentHarnessOperation(harness, params, () =>
       runWithAgentRingZeroTools([], () =>
-        runAgentHarnessLifecycleFinalization(harness, attemptParams, () =>
-          finalizeSettledTurn({ attempt: attemptParams, settledAttempt }),
-        ),
+        runAgentHarnessLifecycleFinalization(harness, attemptParams, () => {
+          assertHarnessModelPolicySupport(harness, params);
+          modelExecution?.assertCurrent();
+          return finalizeSettledTurn({ attempt: attemptParams, settledAttempt });
+        }),
       ),
     );
     modelExecution?.assertCurrent();
@@ -204,16 +210,7 @@ export async function runAgentHarnessAttempt(
   const harness = selection.harness;
   const nativeOwnsModel = nativeSessionRuntime?.auth === "native";
   const nativeModelPolicySupported = harness.nativeModelPolicySupport === "exact";
-  const assertNativeModelPolicySupport = () => {
-    const authority = readRunOperatorAuthority(params);
-    if (nativeOwnsModel && authority?.modelPolicy && !nativeModelPolicySupported) {
-      throw new AgentHarnessPreflightError(
-        `Agent harness ${harness.id} cannot enforce your operator role's model policy for native-owned models. Choose a compatible runtime or ask a gateway administrator to update the harness.`,
-      );
-    }
-    return authority;
-  };
-  assertNativeModelPolicySupport();
+  assertHarnessModelPolicySupport(harness, params);
   const runPreparedAttempt = async (
     prepared: Parameters<typeof runAgentHarnessLifecycleAttempt>[1],
   ) => {
@@ -225,19 +222,20 @@ export async function runAgentHarnessAttempt(
         model: params.modelId,
       });
     }
-    const operatorAuthority = assertNativeModelPolicySupport();
+    const operatorAuthority = assertHarnessModelPolicySupport(harness, params);
     const modelExecution =
       selection.builtIn || (nativeOwnsModel && nativeModelPolicySupported)
         ? undefined
         : bindOperatorModelExecution(
             operatorAuthority,
-            nativeOwnsModel
+            !nativeModelPolicySupported
               ? undefined
               : nativeSessionRuntime
                 ? nativeSessionRuntime.modelRef
                 : { provider: params.provider, model: params.modelId },
           );
     try {
+      modelExecution?.assertCurrent();
       const result = await runAgentHarnessLifecycleAttempt(
         harness,
         modelExecution
@@ -447,6 +445,21 @@ export async function runAgentHarnessAttempt(
   }
   const { contextEngineTerminalAnchor: _contextEngineTerminalAnchor, ...publicResult } = result;
   return copyCoreTtsAttemptResultProvenance(result, publicResult);
+}
+
+function assertHarnessModelPolicySupport(harness: AgentHarness, params: EmbeddedRunAttemptParams) {
+  const authority = readRunOperatorAuthority(params);
+  authority?.assertCurrent();
+  if (
+    !isBuiltInOpenClawAgentHarness(harness) &&
+    authority?.modelPolicy &&
+    harness.nativeModelPolicySupport !== "exact"
+  ) {
+    throw new AgentHarnessPreflightError(
+      `Agent harness ${harness.id} cannot enforce your operator role's model policy. Choose a compatible runtime or ask a gateway administrator to update the harness.`,
+    );
+  }
+  return authority;
 }
 
 function selectPreparedAgentHarness(

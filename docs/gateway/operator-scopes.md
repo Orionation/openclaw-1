@@ -94,7 +94,6 @@ an access policy supplied by a plugin.
           agents: ["roboclaw"],
           scopes: ["operator.read", "operator.write"],
           sandbox: "required",
-          modelPolicy: {},
         },
       },
     },
@@ -204,9 +203,17 @@ source model cancels its active model requests and blocks later calls using it,
 while still-permitted sibling models and unrelated work retain their authority.
 New requests use the updated source choices. Direct model requests, title
 previews, and user-invoked model completion or decision tools apply the same
-policy. Native runtimes must expose a qualified
-model selection for restricted requests; an unknown or dropped native default
-does not establish permission. Bounded automatic metadata, operator-configured
+policy. Interactive plugin runtime attempts must certify exact model-policy
+enforcement before they can execute restricted requests, regardless of who supplies
+their credentials. Currently the built-in OpenClaw runtime supports these attempts;
+uncertified plugin runtimes, including Codex, refuse them with a compatible-runtime error.
+Adding a policy also cancels uncertified work that started without one, including
+retained work after its foreground turn finishes. An outer selected model does
+not establish which model a native runtime actually uses. Isolated prompt-only
+completions keep their separate exact-route contract and bind the selected model
+through completion and cleanup.
+
+Bounded automatic metadata, operator-configured
 inbound media preprocessing, and host-owned execution approval keep their
 existing service authority. Omitting `modelPolicy` preserves the role's existing
 model access, and shared-secret System access is unchanged.

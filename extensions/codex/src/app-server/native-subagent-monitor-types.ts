@@ -1,9 +1,13 @@
 import type { EmbeddedRunAttemptParamsV2 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type {
+  captureAgentHarnessCompletionCustody,
+  createAgentHarnessTaskEventSink,
+  AgentHarnessCompletionCustody,
   createAgentHarnessTaskRuntime,
   deliverAgentHarnessTaskCompletion,
   AgentHarnessTaskRuntime,
   AgentHarnessTaskRuntimeScope,
+  AgentHarnessTaskAssignment,
 } from "openclaw/plugin-sdk/agent-harness-task-runtime";
 import type { CodexAppServerClient } from "./client.js";
 import type { CodexInferenceThreadQualification } from "./inference-qualification.js";
@@ -18,6 +22,8 @@ import type { NativeSubagentAssignment } from "./native-subagent-task-ids.js";
 import type { CodexNativeSubagentTaskMirror } from "./native-subagent-task-mirror.js";
 
 export type NativeSubagentMonitorRuntime = {
+  captureAgentHarnessCompletionCustody: typeof captureAgentHarnessCompletionCustody;
+  createAgentHarnessTaskEventSink: typeof createAgentHarnessTaskEventSink;
   createAgentHarnessTaskRuntime: typeof createAgentHarnessTaskRuntime;
   deliverAgentHarnessTaskCompletion: typeof deliverAgentHarnessTaskCompletion;
 };
@@ -82,6 +88,7 @@ export type NativeModelToolInputRequest = Omit<NativeModelInputRequest, "targetT
 };
 
 export type ParentOwner = {
+  completionCustody?: AgentHarnessCompletionCustody;
   turnId?: string;
   modelSource?: NativeModelSourceOwner;
   modelMapping?: NativeModelMapping;
@@ -120,6 +127,7 @@ export type NativeChildAdmissionEvidence = DirectSpawnEvidence &
         modelSourceConsumed?: true;
         /** Unqualified native input cannot borrow a turn from legacy receipt pairing. */
         modelSourceRequiresInference?: true;
+        completionCustody?: AgentHarnessCompletionCustody;
       }
   );
 export type ParentState = {
@@ -158,6 +166,9 @@ export type NativeTurnObservation = {
 };
 
 export type ChildState = NativeSubagentAssignment & {
+  expectedTask?: AgentHarnessTaskAssignment;
+  completionCustody?: AgentHarnessCompletionCustody;
+  emitTaskEvent?: ReturnType<typeof createAgentHarnessTaskEventSink>;
   deliveryReceipts: CodexNativeSubagentDeliveryReceipts;
   parentThreadId: string;
   nativeParentThreadId: string;
@@ -172,7 +183,6 @@ export type ChildState = NativeSubagentAssignment & {
   fallbackCompletion?: RecoveredCompletion;
   pendingCompletion?: RecoveredCompletion;
   completionTaskPhase?: "finalize" | "delivery";
-  completionTaskId?: string;
   // Cold reconstruction requires its saved requester, not a later live registration.
   requiresHistoryOwner?: true;
   subscriptionClosed?: true;
@@ -202,6 +212,7 @@ export type KnownChild = {
     admittedOwner?: ParentOwner;
     admittedSubmission?: CodexNativeSubagentSubmission;
     modelSource?: NativeModelExecution;
+    completionCustody?: AgentHarnessCompletionCustody;
   }>;
   agentPaths: Set<string>;
 };
@@ -232,6 +243,8 @@ export type ThreadStatusRevision = {
 };
 
 export type TaskRecoveryCandidate = NativeSubagentAssignment & {
+  expectedTask: AgentHarnessTaskAssignment;
+  completionCustody?: AgentHarnessCompletionCustody;
   readonly taskId: string;
   terminal: boolean;
   observedTurns: NativeTurnObservation[];

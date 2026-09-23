@@ -37,23 +37,14 @@ type ModelPolicyWildcardRef = {
 };
 
 /** Parse and canonicalize a segment-boundary model-policy prefix wildcard. */
-export function parseModelPolicyWildcardRef(
-  raw: string,
-  options: { allowModelPrefix?: boolean } = {},
-): ModelPolicyWildcardRef | null {
+export function parseModelPolicyWildcardRef(raw: string): ModelPolicyWildcardRef | null {
   const trimmed = raw.trim();
   // Wildcard keys match on segment boundaries, so normalize boundary padding
   // before building the canonical key used by policy matching.
   const segments = trimmed.split("/").map((segment) => segment.trim());
-  const last = segments.at(-1) ?? "";
-  const modelPrefix = options.allowModelPrefix === true && last.endsWith("*") && last !== "*";
-  const literalSegments = modelPrefix
-    ? [...segments.slice(0, -1), last.slice(0, -1)]
-    : segments.slice(0, -1);
   if (
-    segments.length < 2 ||
-    (last !== "*" && !modelPrefix) ||
-    !hasValidSegments(literalSegments, {
+    segments.at(-1) !== "*" ||
+    !hasValidSegments(segments.slice(0, -1), {
       min: 1,
     })
   ) {
@@ -67,6 +58,22 @@ export function parseModelPolicyWildcardRef(
     key: [provider, ...segments.slice(1)].join("/"),
     provider,
   };
+}
+
+/** Role-only model prefixes do not widen the segment grammar used by agent/UI policies. */
+export function parseOperatorModelPolicyWildcardRef(raw: string): ModelPolicyWildcardRef | null {
+  const wildcard = parseModelPolicyWildcardRef(raw);
+  if (wildcard) {
+    return wildcard;
+  }
+  const trimmed = raw.trim();
+  const literal = trimmed.slice(0, -1);
+  if (!trimmed.endsWith("*") || !literal.includes("/") || /\s$/u.test(literal)) {
+    return null;
+  }
+  // Validate the literal prefix with the same segment owner, then remove its synthetic separator.
+  const prefix = parseModelPolicyWildcardRef(`${literal}/*`);
+  return prefix ? { ...prefix, key: `${prefix.key.slice(0, -2)}*` } : null;
 }
 
 /** True for a syntactically valid exact provider/model policy reference. */

@@ -1,3 +1,4 @@
+import type { AgentHarnessCompletionCustody } from "openclaw/plugin-sdk/agent-harness-task-runtime";
 import { readStringField as readString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { readNativeTurnEnd } from "./native-subagent-history-recovery.js";
 import { assertNativeModelInputCompatible } from "./native-subagent-model-input.js";
@@ -33,6 +34,7 @@ export type NativeSubagentSubmissionCall = {
     threadId: string;
     source: NativeModelSourceCustody;
   };
+  completionCustody?: AgentHarnessCompletionCustody;
 };
 
 export type NativeSubmissionCallDependencies = {
@@ -238,7 +240,7 @@ export function assertSubmissionModelInputsCurrent(
 export function settleSubmissionModelInput(
   call: NativeSubagentSubmissionCall,
   accepted: boolean,
-  dependencies: NativeSubmissionCallDependencies,
+  dependencies: Pick<NativeSubmissionCallDependencies, "knownChildren" | "currentModelExecution">,
 ): void {
   const input = call.modelInput;
   if (!input) {
@@ -375,6 +377,35 @@ export function observeSubmissionPredecessor(params: {
   });
   if (call.targets.length === 0) {
     call.owner = undefined;
+    call.completionCustody?.release();
+    call.completionCustody = undefined;
+  }
+}
+
+export function pruneSubmissionCalls(
+  state: ParentState,
+  calls: Map<string, NativeSubagentSubmissionCall> | undefined,
+  dependencies: {
+    parentOwner: (state: ParentState, turnId: string) => ParentOwner | undefined;
+    hasObservationBacking?: (parentThreadId: string, childThreadId: string) => boolean;
+  } & Pick<NativeSubmissionCallDependencies, "knownChildren" | "currentModelExecution">,
+): void {
+  const hasUnboundOwner = [...state.owners.values()].some((owner) => !owner.turnId);
+  for (const [key, call] of calls ?? []) {
+    if (hasSubmissionCallCustody(state, call, dependencies.hasObservationBacking)) {
+      if (!call.owner || ![...state.owners.values()].includes(call.owner)) {
+        call.owner = undefined;
+      }
+      continue;
+    }
+    if (
+      (call.owner && ![...state.owners.values()].includes(call.owner)) ||
+      (!dependencies.parentOwner(state, call.parentTurnId) && !hasUnboundOwner)
+    ) {
+      settleSubmissionModelInput(call, false, dependencies);
+      calls!.delete(key);
+      call.completionCustody?.release();
+    }
   }
 }
 
@@ -437,6 +468,7 @@ export function acceptNativeSubmission(
   call.closed = true;
   call.accepted = true;
   call.owner = owner;
+  call.completionCustody ??= owner.completionCustody?.retain();
   const modelSource = retainNativeModelSource(call.modelInput?.source.owner);
   try {
     settleSubmissionModelInput(call, true, dependencies);
@@ -483,6 +515,10 @@ export function acceptNativeSubmission(
     }
     for (const { childThreadId } of call.targets) {
       dependencies.observeKnownChild(childThreadId);
+    }
+    if (!call.targets.length) {
+      call.completionCustody?.release();
+      call.completionCustody = undefined;
     }
   } finally {
     modelSource?.release();

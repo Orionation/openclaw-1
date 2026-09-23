@@ -1,4 +1,5 @@
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { releaseCompletionCustody } from "./native-subagent-admission-custody.js";
 import type { CodexNativeSubagentCloseOwner } from "./native-subagent-close-owner.js";
 import { CodexNativeSubagentDeliveryReceipts } from "./native-subagent-delivery-receipts.js";
 import {
@@ -10,6 +11,7 @@ import type {
   NativeModelMapping,
   NativeModelBinding,
   NativeModelSource,
+  NativeSubagentMonitorRuntime,
   ParentOwner,
   ParentState,
 } from "./native-subagent-monitor-types.js";
@@ -42,8 +44,9 @@ type ParentDependencies = {
   children: ReadonlyMap<string, ChildState>;
   isClosed: () => boolean;
   isRetired: (state: ParentState) => boolean;
+  runtime: Pick<NativeSubagentMonitorRuntime, "captureAgentHarnessCompletionCustody">;
   prepare: (state: ParentState) => void;
-  reconcile: (state: ParentState) => Promise<void>;
+  reconcile: (state: ParentState, owner: ParentOwner) => Promise<void>;
   submissions: Pick<CodexNativeSubagentSubmissionOwner, "restore" | "bind" | "drain">;
   closes: Pick<CodexNativeSubagentCloseOwner, "bind" | "prune" | "settlements">;
   deliverPending: (state: ParentState, child: ChildState) => Promise<void>;
@@ -164,6 +167,9 @@ export function registerNativeSubagentParent(
     rootModelBinding = undefined;
   };
   try {
+    owner.completionCustody = params.taskRuntimeScope
+      ? dependencies.runtime.captureAgentHarnessCompletionCustody(params.taskRuntimeScope)
+      : undefined;
     if (owner.unqualifiedModelExecution && params.modelSource) {
       rootModelBinding = params.modelSource.bindModelExecution?.(undefined);
       if (!rootModelBinding) {
@@ -181,16 +187,17 @@ export function registerNativeSubagentParent(
       }
     }
     // History recovery remains independent of the foreground start path.
-    void dependencies.reconcile(state).catch((error: unknown) => {
+    void dependencies.reconcile(state, owner).catch((error: unknown) => {
       embeddedAgentLog.warn("Failed to reconcile Codex native subagent task rows", {
         parentThreadId,
         error: formatErrorMessage(error),
       });
     });
-    dependencies.submissions.restore(state);
+    dependencies.submissions.restore(state, owner);
   } catch (error) {
     releaseRootModelBinding();
     state.owners.delete(ownerKey);
+    releaseCompletionCustody(owner);
     owner.modelSource?.release();
     dependencies.prune(registeredState);
     throw error;
@@ -263,6 +270,7 @@ export function registerNativeSubagentParent(
       }
       registered = false;
       releaseRootModelBinding();
+      releaseCompletionCustody(owner);
       owner.nativeReviewRequirement = undefined;
       const current = dependencies.states.get(parentThreadId);
       if (current === registeredState) {

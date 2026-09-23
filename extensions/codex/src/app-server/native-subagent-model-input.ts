@@ -377,7 +377,8 @@ export async function prepareNativeModelToolInput(
 }
 
 type AdmissionDrainDependencies = {
-  admissions: Map<string, NativeChildAdmissionEvidence[]>;
+  admissions: ReadonlyMap<string, NativeChildAdmissionEvidence[]>;
+  replaceAdmissions: (turnId: string, remaining: NativeChildAdmissionEvidence[]) => void;
   knownChildren: ReadonlyMap<string, KnownChild>;
   isCurrent: (state: ParentState) => boolean;
   currentChild: (threadId: string) => ChildState | undefined;
@@ -440,6 +441,7 @@ export function drainNativeChildModelAdmissions(
       }
       if (ownerIsCurrent) {
         evidence.owner = owner;
+        evidence.completionCustody ??= owner.completionCustody?.retain();
         if (!evidence.modelSourceConsumed) {
           evidence.modelSource ??= retainNativeModelSource(evidence.modelOwner ?? owner);
         }
@@ -479,6 +481,7 @@ export function drainNativeChildModelAdmissions(
         if (nativeTurn) {
           if (!nativeTurn.admittedOwner) {
             nativeTurn.admittedOwner = ownerIsCurrent ? owner : evidence.admittedOwner;
+            nativeTurn.completionCustody ??= evidence.completionCustody?.retain();
             if (ownerIsCurrent) {
               owner.onDirectChildAccepted?.();
             }
@@ -498,7 +501,7 @@ export function drainNativeChildModelAdmissions(
       affectedChildren.add(evidence.childThreadId);
       continue;
     }
-    if (!ownerIsCurrent || (!owner.claimDirectChild && !owner.modelSource)) {
+    if (!ownerIsCurrent) {
       continue;
     }
     const childState = dependencies.registerChildThread(state, evidence.childThreadId, {
@@ -519,16 +522,7 @@ export function drainNativeChildModelAdmissions(
       owner.onDirectChildAccepted?.();
     }
   }
-  for (const evidence of pending) {
-    if (evidence.kind === "interaction" && !remaining.includes(evidence)) {
-      evidence.modelSource?.release();
-    }
-  }
-  if (remaining.length) {
-    dependencies.admissions.set(turnId, remaining);
-  } else {
-    dependencies.admissions.delete(turnId);
-  }
+  dependencies.replaceAdmissions(turnId, remaining);
   for (const threadId of unknownChildren) {
     dependencies.associateUnregisteredChildInteractions(state, threadId);
   }

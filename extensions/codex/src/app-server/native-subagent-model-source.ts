@@ -21,84 +21,6 @@ import type {
 
 export const MAX_PENDING_CHILD_ADMISSION_EVIDENCE = 32;
 
-function hasUnboundNativeParentOwner(
-  parents: ReadonlyMap<string, ParentState>,
-  threadId: string,
-): boolean {
-  const owners = parents.get(threadId)?.owners.values() ?? [];
-  return [...owners].some((owner) => owner.turnId === undefined);
-}
-
-export function bufferNativeChildAdmission(
-  turnIdInput: string | undefined,
-  evidence: NativeChildAdmissionEvidence,
-  parents: ReadonlyMap<string, ParentState>,
-  knownChildren: ReadonlyMap<string, KnownChild>,
-  admissions: Map<string, NativeChildAdmissionEvidence[]>,
-): void {
-  const turnId = turnIdInput?.trim();
-  const requiresUnboundOwner =
-    evidence.kind !== "interaction" || (!evidence.owner && !evidence.modelOwner);
-  if (
-    !turnId ||
-    (requiresUnboundOwner && !hasUnboundNativeParentOwner(parents, evidence.parentThreadId))
-  ) {
-    return;
-  }
-  const pending = admissions.get(turnId) ?? [];
-  if (evidence.kind === "interaction" && !evidence.nativeTurnId) {
-    // Interrupted continuations leave the receipt queue before their
-    // interaction can arrive. Keep pairing against the observed starts.
-    const nativeTurn = [...(knownChildren.get(evidence.childThreadId)?.observedTurns ?? [])].find(
-      ([nativeTurnId, observed]) =>
-        observed.awaitingInteraction &&
-        ![...admissions.values()]
-          .flat()
-          .some(
-            (candidate) =>
-              candidate.kind === "interaction" &&
-              candidate.parentThreadId === evidence.parentThreadId &&
-              candidate.childThreadId === evidence.childThreadId &&
-              candidate.nativeTurnId === nativeTurnId,
-          ),
-    );
-    if (nativeTurn) {
-      evidence.nativeTurnId = nativeTurn[0];
-    }
-  }
-  if (
-    pending.some(
-      (candidate) =>
-        candidate.parentThreadId === evidence.parentThreadId &&
-        candidate.kind === evidence.kind &&
-        candidate.childThreadId === evidence.childThreadId &&
-        candidate.agentPath === evidence.agentPath &&
-        (candidate.kind === "spawn" ||
-          evidence.kind === "spawn" ||
-          (candidate.modelSourceTurnId === evidence.modelSourceTurnId &&
-            ((candidate.nativeTurnId !== undefined &&
-              candidate.nativeTurnId === evidence.nativeTurnId) ||
-              (evidence.itemId !== undefined && candidate.itemId === evidence.itemId)))),
-    ) ||
-    (requiresUnboundOwner &&
-      [...admissions.values()].reduce((count, entries) => count + entries.length, 0) >=
-        MAX_PENDING_CHILD_ADMISSION_EVIDENCE)
-  ) {
-    return;
-  }
-  pending.push(evidence);
-  if (evidence.kind === "interaction" && !evidence.modelSourceConsumed) {
-    const owner = evidence.modelOwner ?? evidence.owner;
-    if (owner?.unqualifiedModelExecution && !owner.nativeInputConfiguration) {
-      evidence.modelSourceRequiresInference = evidence.modelSourceTurnId ? undefined : true;
-      evidence.modelSource = retainNativeModelExecution(owner, undefined, evidence.childThreadId);
-    } else {
-      evidence.modelSource = retainNativeModelSource(owner);
-    }
-  }
-  admissions.set(turnId, pending);
-}
-
 export function notifyNativeModelSourceWaiters(state: ParentState): void {
   const waiters = [...(state.modelSourceWaiters ?? [])];
   state.modelSourceWaiters?.clear();
@@ -189,6 +111,7 @@ export function retainNativeModelExecution(
   owner: ParentOwner | undefined,
   turnId: string | undefined,
   threadId: string,
+  completionCustody = owner?.completionCustody,
 ): NativeModelExecution | undefined {
   const capture = owner?.modelSource?.capture();
   if (!owner || !capture) {
@@ -201,6 +124,12 @@ export function retainNativeModelExecution(
     unqualifiedModelExecution: owner.unqualifiedModelExecution,
     interruptModelExecution: owner.interruptModelExecution,
   };
+  try {
+    nativeOwner.completionCustody = completionCustody?.retain();
+  } catch (error) {
+    capture.release();
+    throw error;
+  }
   if (owner.unqualifiedModelExecution && owner.modelExecutionCancelled) {
     nativeOwner.modelExecutionCancelled = true;
   }
@@ -258,7 +187,12 @@ export function retainNativeModelExecution(
         try {
           binding?.release();
         } finally {
-          capture.release();
+          try {
+            nativeOwner.completionCustody?.release();
+          } finally {
+            nativeOwner.completionCustody = undefined;
+            capture.release();
+          }
         }
       }
     },
@@ -328,18 +262,22 @@ export function bindNativeChildModelAdmission(
   const pending = known.pendingTurns.find((entry) => entry.turnId === turnId);
   if (pending) {
     if (!pending.state || pending.state === "active") {
+      pending.completionCustody ??= evidence.completionCustody?.retain();
       pending.modelSource ??= retainNativeModelExecution(
         source.owner,
         turnId,
         evidence.childThreadId,
+        evidence.completionCustody,
       );
     }
   } else if (child?.nativeTurnId === turnId) {
     if (!child.terminal && !child.settledWithoutCompletion) {
+      child.completionCustody ??= evidence.completionCustody?.retain();
       child.modelExecution ??= retainNativeModelExecution(
         source.owner,
         turnId,
         evidence.childThreadId,
+        evidence.completionCustody,
       );
     }
   } else {
@@ -353,7 +291,6 @@ export function closeNativeModelChild(
   threadId: string | undefined,
   knownChildren: ReadonlyMap<string, KnownChild>,
   children: ReadonlyMap<string, ChildState>,
-  admissions: Map<string, NativeChildAdmissionEvidence[]>,
   prune: (state: ParentState) => void,
 ): void {
   const known = threadId ? knownChildren.get(threadId) : undefined;
@@ -368,7 +305,6 @@ export function closeNativeModelChild(
     pending.modelSource?.release();
     pending.modelSource = undefined;
   }
-  filterNativeChildAdmissions(admissions, (entry) => entry.childThreadId !== threadId);
   prune(known.parent);
 }
 
@@ -387,51 +323,6 @@ export function releaseNativeParentModelSources(
       }
     }
   }
-}
-
-export function filterNativeChildAdmissions(
-  admissions: Map<string, NativeChildAdmissionEvidence[]>,
-  keep: (evidence: NativeChildAdmissionEvidence) => boolean,
-): void {
-  for (const [turnId, pending] of admissions) {
-    const remaining = pending.filter(keep);
-    if (remaining.length) {
-      admissions.set(turnId, remaining);
-    } else {
-      admissions.delete(turnId);
-    }
-    for (const evidence of pending) {
-      if (evidence.kind === "interaction" && !remaining.includes(evidence)) {
-        evidence.modelSource?.release();
-      }
-    }
-  }
-}
-
-export function pruneNativeChildAdmissions(
-  admissions: Map<string, NativeChildAdmissionEvidence[]>,
-  parents: ReadonlyMap<string, ParentState>,
-  children: ReadonlyMap<string, KnownChild>,
-  isRetired: (state: ParentState) => boolean,
-  hasRecovery: (state: ParentState, threadId: string) => boolean,
-): void {
-  filterNativeChildAdmissions(admissions, (evidence) => {
-    const known = children.get(evidence.childThreadId);
-    if (known && known.parent.parentThreadId !== evidence.parentThreadId) {
-      return false;
-    }
-    const state = parents.get(evidence.parentThreadId);
-    if (evidence.kind === "interaction" && (evidence.owner || evidence.modelSource)) {
-      if (evidence.modelSource && state && !isRetired(state)) {
-        return true;
-      }
-      if (state && evidence.owner && [...state.owners.values()].includes(evidence.owner)) {
-        return true;
-      }
-      return Boolean(evidence.admittedOwner && state && hasRecovery(state, evidence.childThreadId));
-    }
-    return [...(state?.owners.values() ?? [])].some((owner) => !owner.turnId);
-  });
 }
 
 export function associateNativeChildInteraction(
@@ -478,6 +369,7 @@ type ModelSourceDependencies = {
     state: ParentState,
     request: NativeModelSourceRequest,
     agentPath?: string,
+    completionCustody?: ParentOwner["completionCustody"],
   ) => void;
 };
 
@@ -556,7 +448,12 @@ function executionOwner(
     for (const entry of admitted) {
       entry.modelSource?.assertCurrent();
     }
-    dependencies.registerChildExecution(state, request, admitted[0]?.agentPath);
+    dependencies.registerChildExecution(
+      state,
+      request,
+      admitted[0]?.agentPath,
+      admitted[0]?.completionCustody,
+    );
   }
   const known = dependencies.knownChildren.get(request.threadId);
   if (
@@ -601,7 +498,13 @@ function executionOwner(
   for (const entry of admitted) {
     entry.modelSource?.assertCurrent();
   }
-  const modelSource = retainNativeModelExecution(owner, request.turnId, request.threadId);
+  const completionCustody = admitted[0]?.completionCustody;
+  const modelSource = retainNativeModelExecution(
+    owner,
+    request.turnId,
+    request.threadId,
+    completionCustody,
+  );
   if (!modelSource) {
     return undefined;
   }
@@ -611,17 +514,24 @@ function executionOwner(
     !child.settledWithoutCompletion
   ) {
     child.modelExecution = modelSource;
+    child.completionCustody ??= completionCustody?.retain();
   } else if (pending) {
     pending.modelSource = modelSource;
+    pending.completionCustody ??= completionCustody?.retain();
   } else {
-    known.pendingTurns.push({ turnId: request.turnId, state: undefined, modelSource });
+    known.pendingTurns.push({
+      turnId: request.turnId,
+      state: undefined,
+      modelSource,
+      completionCustody: completionCustody?.retain(),
+    });
   }
   for (const entry of admitted) {
     if (entry.kind === "interaction" && entry.modelSource?.owner === owner) {
       consumeNativeChildModelAdmission(entry);
     }
   }
-  if (pending?.state === "active") {
+  if (pending?.state === "active" || child?.nativeTurnId === request.turnId) {
     dependencies.onExecutionAdmitted(known, request.threadId);
   }
   return modelSource.executionOwner;

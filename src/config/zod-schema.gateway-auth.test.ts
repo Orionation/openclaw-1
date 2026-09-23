@@ -150,6 +150,8 @@ describe("gateway operator role config", () => {
     { sourceAgent: "shared", deny: ["fixture/*restricted"] },
     { sourceAgent: "shared", deny: ["*/restricted-*"] },
     { sourceAgent: "shared", deny: ["fixture/restricted-**"] },
+    { sourceAgent: "shared", deny: ["fixture*"] },
+    { sourceAgent: "shared", deny: ["fixture/restricted- *"] },
   ])("rejects model exclusions that cannot be applied as configured: %j", (modelPolicy) => {
     const result = validateConfigObject({
       agents: { entries: { shared: { model: "fixture/primary" } } },
