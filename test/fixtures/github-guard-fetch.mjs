@@ -4,7 +4,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { installGuardClock } from "./github-guard-clock.mjs";
 
 const fixture = JSON.parse(readFileSync(process.env.OPENCLAW_GUARD_TEST_FIXTURE, "utf8"));
-if (fixture.clock) installGuardClock(fixture.logPath);
+const advanceClock = fixture.clock ? installGuardClock(fixture.logPath) : null;
 const publishedStatuses = new Map();
 globalThis.fetch = async (url, options = {}) => {
   const parsed = new URL(url);
@@ -43,6 +43,14 @@ globalThis.fetch = async (url, options = {}) => {
       ? responseRoute.responses.shift()
       : responseRoute.responses[0]
     : responseRoute;
+  if (value?.requestTimeout) {
+    const expire = () => advanceClock(30_000);
+    if (value.requestTimeout === "body") {
+      return new Response(new ReadableStream({ pull: expire }, { highWaterMark: 0 }));
+    }
+    expire();
+    return new Promise(() => {});
+  }
   if (value?.recordStatusBeforeError) recordStatus();
   if (value?.transportError) {
     throw new TypeError("fetch failed", {

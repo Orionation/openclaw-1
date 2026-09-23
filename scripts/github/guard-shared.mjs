@@ -50,6 +50,8 @@ export class GitHubStatusPublicationError extends Error {
 
 export class GitHubDiffDataError extends Error {}
 
+export class GitHubReadTimeoutError extends Error {}
+
 export async function withSecurityReviewRecovery(evaluate) {
   const recorded = process.env[recoveryDeadlineEnv];
   const deadline = recorded === undefined ? Date.now() + securityReviewBudgetMs : Number(recorded);
@@ -65,7 +67,13 @@ export async function withSecurityReviewRecovery(evaluate) {
     } catch (error) {
       const rateLimited = error instanceof GitHubRateLimitError;
       const inconsistentDiff = error instanceof GitHubDiffDataError;
-      if (!rateLimited && !inconsistentDiff && !(error instanceof GitHubStatusPublicationError)) {
+      const readTimedOut = error instanceof GitHubReadTimeoutError;
+      if (
+        !rateLimited &&
+        !inconsistentDiff &&
+        !readTimedOut &&
+        !(error instanceof GitHubStatusPublicationError)
+      ) {
         throw error;
       }
       // Do not resume a status write with stale authority after waiting. The
@@ -86,7 +94,7 @@ export async function withSecurityReviewRecovery(evaluate) {
         );
       }
       console.warn(
-        `${rateLimited ? `GitHub API rate limited (${error.status})` : inconsistentDiff ? error.message : `GitHub status publication failed (${error.message})`}; retrying the complete evaluation in ${Math.ceil(delay / 1_000)}s (attempt ${attempt + 1}/3).`,
+        `${rateLimited ? `GitHub API rate limited (${error.status})` : inconsistentDiff || readTimedOut ? error.message : `GitHub status publication failed (${error.message})`}; retrying the complete evaluation in ${Math.ceil(delay / 1_000)}s (attempt ${attempt + 1}/3).`,
       );
       await wait(delay);
     }
@@ -326,7 +334,11 @@ export async function readBoundedGitHubJson(
 }
 
 function timeoutError(path, method, timeoutMs) {
-  return new Error(`GitHub API ${method} ${path} exceeded timeout ${timeoutMs}ms`);
+  const message = `GitHub API ${method} ${path} exceeded timeout ${timeoutMs}ms`;
+  // An expired write may already have succeeded; only reads can restart review.
+  return method === "GET" || method === "HEAD"
+    ? new GitHubReadTimeoutError(message)
+    : new Error(message);
 }
 
 function combineAbortSignals(signals) {

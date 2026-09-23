@@ -11,6 +11,7 @@ import {
 import {
   GitHubDiffDataError,
   GitHubRateLimitError,
+  GitHubReadTimeoutError,
   GitHubStatusPublicationError,
   publishGuardStatus,
   withSecurityReviewRecovery,
@@ -157,6 +158,7 @@ async function main() {
           if (
             error instanceof GitHubRateLimitError ||
             ((error instanceof GitHubStatusPublicationError ||
+              error instanceof GitHubReadTimeoutError ||
               error instanceof GitHubDiffDataError ||
               error instanceof SupersededReviewError) &&
               errors.length === 0)
@@ -236,6 +238,7 @@ async function main() {
     if (
       error instanceof GitHubRateLimitError ||
       error instanceof GitHubStatusPublicationError ||
+      error instanceof GitHubReadTimeoutError ||
       error instanceof SupersededReviewError
     ) {
       throw error;
