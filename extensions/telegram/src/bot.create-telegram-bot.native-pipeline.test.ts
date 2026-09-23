@@ -897,25 +897,23 @@ describe("createTelegramBot typed command pipeline", () => {
       cachedAtAdmission.push(await getCachedSticker(sticker.file_unique_id));
       return { text: "Sticker received" };
     });
+    let receiving: Promise<void> | undefined;
     try {
       const bot = createBot(false, true, cfg);
-      const webhook = webhookCallback(bot, "std/http");
+      // Durable ingress dispatches decoded updates independently of the HTTP response.
       const receive = async (update: Parameters<typeof bot.handleUpdate>[0]) => {
-        // grammY requires undefined at the reply leaf; Telegram JSON omits it.
-        const response = await webhook(
-          new Request("http://localhost/telegram", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(update),
-          }),
-        );
-        expect(response.status).toBe(200);
+        const request = new Request("http://localhost/telegram", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(update),
+        });
+        await bot.handleUpdate(await request.json());
       };
-      const receiving = receive({ update_id: 2800, message });
+      receiving = receive({ update_id: 2800, message });
       await Promise.race([
         describeStarted.promise,
         receiving.then(() => {
-          throw new Error("Sticker webhook completed before description started");
+          throw new Error("Sticker update completed before description started");
         }),
       ]);
       expect(harness.replySpy).not.toHaveBeenCalled();
@@ -973,6 +971,9 @@ describe("createTelegramBot typed command pipeline", () => {
       expect(apiCalls.mock.calls.filter(([method]) => method === "sendMessage")).toHaveLength(3);
     } finally {
       description.resolve({ text: "A curious sticker" });
+      if (receiving) {
+        await Promise.allSettled([receiving]);
+      }
       setTelegramRuntime(runtime);
     }
   });
