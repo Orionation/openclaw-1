@@ -2800,6 +2800,16 @@ export const en: TranslationMap & {
   },
   profilePage: {
     offline: "Connect to the gateway to meet your agent.",
+    access: {
+      title: "Connection access",
+      description:
+        "Permissions granted to this connection. A role can limit permissions without granting them; reconnect after an administrator changes your access.",
+      scopes: "Granted scopes",
+      browserRequirement:
+        "The Gateway browser panel requires operator.admin. Sessions, tools, and plugins can have additional restrictions.",
+      unknown: "The gateway did not report this connection's permissions.",
+      none: "No scopes granted.",
+    },
     usageStatistics: "Usage statistics",
     usageStatisticsDescription: "View activity, costs, and usage trends.",
     identity: {
