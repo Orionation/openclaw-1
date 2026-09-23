@@ -30,6 +30,7 @@ export const en: TranslationMap & {
     pullRequests: TranslationMap;
   };
   configPage: TranslationMap;
+  profilePage: TranslationMap & { personalInstructions: TranslationMap };
   connection: TranslationMap;
   configView: TranslationMap;
   custodian: TranslationMap;
@@ -2803,21 +2804,6 @@ export const en: TranslationMap & {
       title: "Personal instructions",
       description:
         "Tell this agent about you and how you like to work. This edits only your personal USER.md, not the shared workspace file.",
-      signIn:
-        "Sign in with your personal profile to edit your instructions. This requires operator.read access.",
-      noAgents: "No agents are available on this connection.",
-      guidance:
-        "{count} / 4,000 characters. Keep it brief: preferences, context, and working style.",
-      missing: "Your personal file will be created when you save.",
-      tooLong: "Shorten your instructions to 4,000 characters before saving.",
-      reload: "Reload",
-      dirty: "Unsaved changes",
-      saved: "Saved",
-      discard: "Discard your unsaved instructions and load the saved file?",
-      failureHint:
-        "Your draft is unchanged. If the file changed elsewhere, copy your draft, then reload before saving again.",
-      contextChanged:
-        "The returned file does not match this profile and agent. Reload before trying again.",
     },
     offline: "Connect to the gateway to meet your agent.",
     usageStatistics: "Usage statistics",

@@ -390,15 +390,19 @@ export class ProfilePage extends OpenClawLightDomElement {
 
   private renderBody() {
     const connected = this.connected && this.client !== null;
+    const multipleProfiles =
+      this.context.gateway.snapshot.hello?.policy?.hasMultipleSessionSharingIdentities === true;
     // Keep the personal editor mounted through transport interruptions so its
-    // identity-bound unsaved draft survives; the editor hides offline contents.
+    // draft survives, but hide the host on single-user Gateways so it adds no layout gap.
     return renderSettingsPage(html`
       ${
         connected
           ? html`${this.renderHero()} ${this.renderIdentity()}`
           : renderSettingsGroup(renderSettingsEmpty(t("profilePage.offline")))
       }
-      <openclaw-personal-instructions ?hidden=${!connected}></openclaw-personal-instructions>
+      <openclaw-personal-instructions
+        ?hidden=${!connected || !multipleProfiles}
+      ></openclaw-personal-instructions>
       ${
         connected
           ? html`

@@ -10,9 +10,12 @@ import { applicationContext, type ApplicationContext } from "../../app/context.t
 import { hasOperatorReadAccess } from "../../app/operator-access.ts";
 import { renderSettingsEmpty, renderSettingsSection } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
+import { registerPersonalInstructionsEnglish } from "../../i18n/locales/en-personal-instructions.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { PROFILE_SETTINGS_TARGET_IDS } from "../config/settings-targets.ts";
+
+registerPersonalInstructionsEnglish();
 
 export class PersonalInstructions extends OpenClawLightDomElement {
   @consume({ context: applicationContext, subscribe: false })
