@@ -6,6 +6,7 @@ import {
   type NormalizedLocation,
   type SupplementalContextFacts,
 } from "openclaw/plugin-sdk/channel-inbound";
+import type { ResolvedChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import { resolveChannelMessageSourceReplyDeliveryMode } from "openclaw/plugin-sdk/channel-outbound";
 import type { ReplyThreadingPolicy } from "openclaw/plugin-sdk/reply-reference";
 
@@ -43,8 +44,8 @@ export type PreparedChannelInbound = Pick<
   | "sessionTranscript"
   | "media"
   | "contextVisibility"
-  | "channelIngress"
 > & {
+  channelIngress?: ResolvedChannelMessageIngress;
   event: {
     id: string;
     fullId?: string;
