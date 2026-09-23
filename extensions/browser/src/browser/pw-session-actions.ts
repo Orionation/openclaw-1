@@ -45,6 +45,7 @@ import {
   gotoPageWithNavigationGuard,
   isPolicyDenyNavigationError,
 } from "./pw-session-navigation.js";
+import type { PlaywrightOwnedPage } from "./pw-session-page.types.js";
 import {
   ensurePageState,
   getObservedBrowserStateForPage,
@@ -523,14 +524,7 @@ export async function createPageViaPlaywright(
     /** Own an empty context; never reuse profile cookies for a session-scoped dashboard. */
     isolatedContext?: true;
   } & BrowserNavigationPolicyOptions,
-): Promise<{
-  targetId: string;
-  title: string;
-  url: string;
-  type: string;
-  close: () => Promise<void>;
-  isCurrent: () => boolean;
-}> {
+): Promise<PlaywrightOwnedPage> {
   opts.signal?.throwIfAborted();
   const targetUrl = opts.url.trim() || "about:blank";
   const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, {
