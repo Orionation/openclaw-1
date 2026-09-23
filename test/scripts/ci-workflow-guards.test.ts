@@ -3746,6 +3746,7 @@ setImmediate(() => {
     const workflow = readCiWorkflow();
     const jobs = workflow.jobs as Record<string, { "runs-on": unknown }>;
     const expectedHostedRunners = {
+      "pr-fail-fast": "ubuntu-24.04",
       android: "ubuntu-24.04",
       "build-artifacts": "ubuntu-24.04",
       "check-additional-shard": "ubuntu-24.04",
@@ -3772,6 +3773,7 @@ setImmediate(() => {
     } as const;
     const expectedHybridFirstAttemptRunners = {
       ...expectedHostedRunners,
+      "pr-fail-fast": "blacksmith-4vcpu-ubuntu-2404",
       preflight: "blacksmith-16vcpu-ubuntu-2404",
       "security-fast": "blacksmith-4vcpu-ubuntu-2404",
       android: "blacksmith-8vcpu-ubuntu-2404",
@@ -3787,6 +3789,7 @@ setImmediate(() => {
     } as const;
     const expectedHybridForkRunners = {
       ...expectedHybridFirstAttemptRunners,
+      "pr-fail-fast": "ubuntu-24.04",
       "docker-seed-e2e": "ubuntu-24.04",
     } as const;
     const configurableJobs = Object.entries(jobs)

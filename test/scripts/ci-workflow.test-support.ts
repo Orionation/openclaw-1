@@ -72,6 +72,9 @@ export function evaluateWorkflowExpression(
     hostedRunnerProfileContract?: boolean;
     matrix?: Record<string, unknown>;
     preflightOutputs?: Record<string, string>;
+    preflightResult?: string;
+    failFastOutputs?: Record<string, string>;
+    failFastResult?: string;
     pullRequestNumber?: number;
     ref?: string;
     resolveTargetOutputs?: Record<string, string>;
@@ -191,6 +194,7 @@ export function evaluateWorkflowExpression(
     needs: {
       resolve_target: { outputs: context.resolveTargetOutputs ?? {} },
       preflight: {
+        result: context.preflightResult ?? "success",
         outputs: {
           frozen_target: String(context.frozenTarget ?? false),
           hosted_runner_profile_contract: String(context.hostedRunnerProfileContract ?? true),
@@ -198,6 +202,10 @@ export function evaluateWorkflowExpression(
           runner_profile: context.runnerProfile ?? context.runnerBackend ?? "blacksmith",
           ...context.preflightOutputs,
         },
+      },
+      "pr-fail-fast": {
+        result: context.failFastResult ?? "success",
+        outputs: { failure_job_id: "", failure_run_attempt: "", ...context.failFastOutputs },
       },
     },
     vars: {

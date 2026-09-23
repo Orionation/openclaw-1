@@ -223,8 +223,13 @@ These are intentionally guarded by the `ci-workflow-guards`,
   hybrid first attempt when optional hosted admission is closed, one when admitted,
   and one per normal Blacksmith run. Both jobs already occur in the retained
   conservative non-Node inventory, preserving the 5,010-registration cap model.
-  The aggregate uses `!cancelled()` to report failed prerequisites without
-  holding a superseded run open after workflow cancellation.
+  The aggregate preserves failure-triggered PR cancellation through the
+  `pr-fail-fast` cause outputs; superseded runs without a failure cause still
+  skip the aggregate. PR Node matrices use native fail-fast. The same-repository
+  PR first-attempt monitor alone has `actions: write` and adds one 4-class registration per
+  eligible PR, or uses hosted Ubuntu under the outage override. Main/manual
+  matrices remain complete. Reserve 21 more registrations in the retained
+  21-PR arrival envelope; the conservative 5,085 bound becomes 5,106.
 - Automatic canonical hybrid first attempts count every selected hosted row in
   preflight. `HYBRID_HOSTED_BASE_ROW_LIMIT = 40` admits at most five optional
   rows within `HYBRID_HOSTED_ROW_LIMIT = 45`: security, three Control UI unit
