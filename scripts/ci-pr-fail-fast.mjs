@@ -112,7 +112,8 @@ export async function monitorPrFailure(options) {
       return false;
     }
     const current = await request(runRoute);
-    return matchesRun(current) && current.status === "in_progress";
+    // GitHub can report queued while selected jobs are already running.
+    return matchesRun(current) && (current.status === "queued" || current.status === "in_progress");
   };
 
   while (true) {

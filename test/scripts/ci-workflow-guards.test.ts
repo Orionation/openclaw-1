@@ -3505,13 +3505,15 @@ setImmediate(() => {
 
   it("keeps trusted hybrid controls on Blacksmith when optional hosted admission is closed", () => {
     const workflow = readCiWorkflow();
-    expect(workflow.jobs["ci-gate"]["runs-on"]).toBe("ubuntu-24.04");
     const context = {
       eventName: "pull_request",
       repository: "openclaw/openclaw",
       runAttempt: 1,
       runnerBackend: "hybrid",
     } as const;
+    expect(evaluateWorkflowExpression(workflow.jobs["ci-gate"]["runs-on"], context)).toBe(
+      "ubuntu-24.04",
+    );
 
     for (const jobName of ["preflight", "security-fast"]) {
       const expression = workflow.jobs[jobName]["runs-on"];
@@ -3746,6 +3748,7 @@ setImmediate(() => {
     const workflow = readCiWorkflow();
     const jobs = workflow.jobs as Record<string, { "runs-on": unknown }>;
     const expectedHostedRunners = {
+      "ci-gate": "ubuntu-24.04",
       "pr-fail-fast": "ubuntu-24.04",
       android: "ubuntu-24.04",
       "build-artifacts": "ubuntu-24.04",

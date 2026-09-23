@@ -12,6 +12,31 @@ import {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("PR failure cancellation", () => {
+  it("uses prompt paid capacity only for current failure reporting", () => {
+    const gate = readCiWorkflow().jobs["ci-gate"];
+    const context = {
+      eventName: "pull_request" as const,
+      repository: "openclaw/openclaw",
+      runAttempt: 1,
+      runnerProfile: "hybrid" as const,
+      failFastOutputs: { failure_job_id: "42", failure_run_attempt: "1" },
+    };
+    expect(evaluateWorkflowExpression(gate["runs-on"], context)).toBe(
+      "blacksmith-4vcpu-ubuntu-2404",
+    );
+    for (const override of [
+      { failFastOutputs: {} },
+      { runAttempt: 2 },
+      { runnerProfile: "github" as const },
+      { eventName: "push" as const },
+      { eventName: "workflow_dispatch" as const },
+      { headRepository: "contributor/openclaw" },
+    ]) {
+      expect(evaluateWorkflowExpression(gate["runs-on"], { ...context, ...override })).toBe(
+        "ubuntu-24.04",
+      );
+    }
+  });
   it("limits cancellation authority to the same-repository PR monitor", () => {
     const workflow = readCiWorkflow();
     expect(

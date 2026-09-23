@@ -6728,8 +6728,9 @@ jobs:
     # Failure cancellation must stay red, including an uncertain cancel response.
     # Superseded runs have no failure cause and release their slot without a gate.
     if: ${{ always() && (!cancelled() || (needs.pr-fail-fast.outputs.failure_run_attempt == format('{0}', github.run_attempt) && needs.pr-fail-fast.outputs.failure_job_id != '') || (github.run_attempt == 1 && needs.pr-fail-fast.result == 'failure')) && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    # The gate only aggregates job results; keep it independent of Blacksmith capacity.
-    runs-on: ubuntu-24.04
+    # Failure reporting must acquire a runner inside the cancellation grace period.
+    # Ordinary runs retain hosted aggregation and the outage override remains authoritative.
+    runs-on: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 && github.event.pull_request.head.repo.full_name == github.repository && needs.preflight.outputs.runner_profile != 'github' && ((needs.pr-fail-fast.outputs.failure_run_attempt == '1' && needs.pr-fail-fast.outputs.failure_job_id != '') || needs.pr-fail-fast.result == 'failure') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
       - name: Report originating PR failure

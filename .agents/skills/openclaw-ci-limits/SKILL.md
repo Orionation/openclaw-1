@@ -208,9 +208,9 @@ These are intentionally guarded by the `ci-workflow-guards`,
   include short-publisher turnover in burst estimates. Preflight and downstream Node jobs are
   restore-only consumers on eligible self-hosted runners. Exact misses and
   hosted paths, including Mac Node jobs, use the ordinary pnpm-store cache.
-- `ci-gate` always uses `ubuntu-24.04` for its Bash-only result aggregation,
-  without checkout or dependency setup. This removes one Blacksmith registration
-  from previously eligible runs; hosted assignment can still delay completion.
+- Ordinary `ci-gate` aggregation uses `ubuntu-24.04`, without checkout or
+  dependency setup. Failure-triggered PR cancellation has the 4-class exception
+  below so its required result does not wait out the cancellation grace period.
   Trusted automatic hybrid first-attempt `preflight` requests the existing
   16-class after hosted assignment stalled across three nearby runs while
   Blacksmith security jobs succeeded. Its logical planner profile, cache trust,
@@ -228,8 +228,11 @@ These are intentionally guarded by the `ci-workflow-guards`,
   skip the aggregate. PR Node matrices use native fail-fast. The same-repository
   PR first-attempt monitor alone has `actions: write` and adds one 4-class registration per
   eligible PR, or uses hosted Ubuntu under the outage override. Main/manual
-  matrices remain complete. Reserve 21 more registrations in the retained
-  21-PR arrival envelope; the conservative 5,085 bound becomes 5,106.
+  matrices remain complete. A current failure cause routes the PR aggregate to
+  the same 4-class so hosted queues cannot consume its cancellation grace period;
+  ordinary, retry, main/manual and GitHub-override gates remain hosted. Reserve
+  up to 42 more registrations in the retained 21-PR arrival envelope (monitor
+  plus failure reporter); the conservative 5,085 bound becomes 5,127.
 - Automatic canonical hybrid first attempts count every selected hosted row in
   preflight. `HYBRID_HOSTED_BASE_ROW_LIMIT = 40` admits at most five optional
   rows within `HYBRID_HOSTED_ROW_LIMIT = 45`: security, three Control UI unit
