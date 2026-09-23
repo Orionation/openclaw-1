@@ -188,6 +188,86 @@ afterEach(async () => {
 });
 
 describe("secret egress registration lifecycle", () => {
+  it("reuses upstream TLS only within a live grant and releases idle connections on revocation", async () => {
+    const peers: Socket[] = [];
+    origin.removeAllListeners("request");
+    origin.on("request", (request, response) => {
+      peers.push(request.socket);
+      expect(request.headers.authorization).toBe(`Bearer ${value}`);
+      expect(request.headers["proxy-authorization"]).toBeUndefined();
+      request.resume();
+      response.writeHead(200, { "Content-Length": 2 });
+      response.end("ok");
+    });
+    const send = async (processGrant: SecretEgressProcessGrant, connection = "keep-alive") => {
+      const url = new URL(processGrant.env.HTTPS_PROXY!);
+      return new Promise<void>((resolve, reject) => {
+        const request = httpRequest(
+          {
+            hostname: url.hostname,
+            port: url.port,
+            path: `https://localhost:${originPort}/`,
+            agent: false,
+            headers: {
+              Connection: connection,
+              Authorization: `Bearer ${sentinel}`,
+              "Proxy-Authorization": `Basic ${Buffer.from(`openclaw:${url.password}`).toString("base64")}`,
+            },
+          },
+          (response) => {
+            let body = "";
+            response.on("data", (chunk: Buffer) => (body += chunk.toString()));
+            response.once("end", () => {
+              expect(response.statusCode).toBe(200);
+              expect(body).toBe("ok");
+              resolve();
+            });
+          },
+        );
+        request.once("error", reject);
+        request.end();
+      });
+    };
+    const connect = vi.spyOn(tls, "connect");
+    const sibling = register();
+    await send(grant);
+    await send(grant);
+    await send(sibling);
+    expect(peers[1]).toBe(peers[0]);
+    expect(peers[2]).not.toBe(peers[0]);
+    const revokedPeerClosed = onClose(peers[0]!);
+    grant.revoke();
+    await revokedPeerClosed;
+    await send(sibling);
+    expect(peers[3]).toBe(peers[2]);
+    // Even a peer-requested reconnect must reuse parsed trust, without retaining
+    // request credentials in TLS options or an agent's persistent options.
+    const siblingPeerClosed = onClose(peers[2]!);
+    await send(sibling, "close");
+    await siblingPeerClosed;
+    await send(sibling);
+    expect(peers[5]).not.toBe(peers[2]);
+    const options = connect.mock.calls.map(([options]) => options as tls.ConnectionOptions);
+    expect(options).toHaveLength(3);
+    expect(options[0]?.secureContext).toBeDefined();
+    for (const option of options) {
+      expect(option.secureContext).toBe(options[0]?.secureContext);
+      expect(option.ca).toBeUndefined();
+      expect(option.key).toBeUndefined();
+      expect(option.cert).toBeUndefined();
+    }
+    for (const [options] of vi.mocked(https.request).mock.calls) {
+      const agent = (options as https.RequestOptions).agent;
+      if (agent && typeof agent === "object") {
+        expect(JSON.stringify(agent.options)).not.toContain(value);
+        expect(agent.options.headers).toBeUndefined();
+      }
+    }
+    const stoppedPeerClosed = onClose(peers[5]!);
+    await proxy.stop();
+    await stoppedPeerClosed;
+  });
+
   it.each(["header", "body", "url"] as const)(
     "keeps an in-flight %s credential bound to its process snapshot",
     async (location) => {
