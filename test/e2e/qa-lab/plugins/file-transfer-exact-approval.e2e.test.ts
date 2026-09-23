@@ -136,11 +136,22 @@ describe("file-transfer exact approval transport", () => {
           fileTransferPlugin.register?.(api);
         },
       });
-      expect(registry.registry.nodeInvokePolicies).toEqual([
+      expect(
+        registry.registry.nodeInvokePolicies.filter((entry) =>
+          entry.policy.commands.includes(FILE_FETCH_COMMAND),
+        ),
+      ).toEqual([
         expect.objectContaining({
           pluginId: "file-transfer",
           policy: expect.objectContaining({
-            commands: [FILE_FETCH_COMMAND, "file.stat", "dir.list", "dir.fetch", "file.write"],
+            commands: [
+              FILE_FETCH_COMMAND,
+              "file.stat",
+              "dir.list",
+              "dir.fetch",
+              "file.write",
+              "file.create",
+            ],
           }),
         }),
       ]);

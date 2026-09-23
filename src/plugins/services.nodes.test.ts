@@ -219,8 +219,14 @@ describe("service-owned node invocation", () => {
 
   it("aborts pending dispatch before slow service cleanup finishes", async () => {
     const cleanup = createDeferredCore();
+    const cleanupEntered = createDeferredCore();
     const entered = createDeferredCore<AbortSignal>();
-    const fixture = await startFixture({ stop: () => cleanup.promise });
+    const fixture = await startFixture({
+      stop: () => {
+        cleanupEntered.resolve();
+        return cleanup.promise;
+      },
+    });
     fixture.nodeHandler.mockImplementation(async ({ signal, respond }) => {
       entered.resolve(signal!);
       await new Promise<void>((resolve) => {
@@ -233,6 +239,7 @@ describe("service-owned node invocation", () => {
     const signal = await entered.promise;
     const stopping = fixture.handle.stop();
     try {
+      await cleanupEntered.promise;
       expect(signal.aborted).toBe(true);
       await rejected;
       await expect(fixture.serviceContext.invokeNode!(request)).rejects.toThrow();

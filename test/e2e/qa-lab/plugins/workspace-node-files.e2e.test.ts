@@ -229,8 +229,6 @@ describe("node workspace document access", () => {
               "node",
               "run",
               ...(setupCode ? ["--pair-if-needed", setupCode] : []),
-              "--commands",
-              COMMANDS.join(","),
             ],
             { cwd: process.cwd(), env: state.env, stdio: ["ignore", "pipe", "pipe"] },
           );
