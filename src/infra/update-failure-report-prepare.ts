@@ -10,11 +10,15 @@ import {
   redactSupportDiagnosticLine,
   redactSupportString,
 } from "../logging/diagnostic-support-redaction.js";
-import { classifyUpdateOutcome } from "../shared/update-outcome.js";
+import {
+  classifyUpdateOutcome,
+  UPDATE_FOREIGN_DESTINATION_REASON,
+} from "../shared/update-outcome.js";
 import { truncateUtf8Prefix } from "../utils/utf8-truncate.js";
 import { VERSION } from "../version.js";
 import { prepareGithubIssue, type PreparedGithubIssue } from "./github-issue.js";
 import { normalizeUpdateChannel } from "./update-channels.js";
+import { UPDATE_DESTINATION_RECOVERY } from "./update-destination-failure.js";
 import { normalizeUpdateDoctorLintFindings } from "./update-doctor-lint.js";
 import {
   formatUpdateFailureFact,
@@ -25,6 +29,7 @@ import {
   isPublicUpdateFailureCode,
   projectPublicUpdateFailureIdentifiers,
 } from "./update-failure-public-identifiers.js";
+import { formatNpmFailureFacts } from "./update-npm-failure.js";
 import { updatePreflightDetailMessage } from "./update-preflight-details.js";
 import {
   LEGACY_UPDATE_RUN_ADVISORY,
@@ -253,6 +258,9 @@ async function renderBoundedDiagnostics(
   if (input.result.reason === LEGACY_UPDATE_RUN_EXPIRED_REASON) {
     diagnostics.push(`Advisory: ${LEGACY_UPDATE_RUN_ADVISORY}`);
   }
+  if (input.result.reason === UPDATE_FOREIGN_DESTINATION_REASON) {
+    diagnostics.push(`Next step: ${UPDATE_DESTINATION_RECOVERY}`);
+  }
   for (const finding of normalizeUpdateDoctorLintFindings(
     input.result.steps.flatMap((step) => step.doctorLintFindings ?? []),
     context.env,
@@ -300,24 +308,28 @@ async function renderBoundedDiagnostics(
           ? diagnostic
           : `${exit} (${diagnostic})`;
     diagnostics.push(`Failed phase ${phase}: ${detail}${termination}`);
+    diagnostics.push(...formatNpmFailureFacts(step.failureFacts ?? [], context));
     diagnostics.push(
       ...(await Promise.all(
-        normalizeUpdateFailureFacts(step.failureFacts ?? [], context.env).map(async (fact) =>
-          formatUpdateFailureFact({
-            ...(await projectPublicUpdateFailureIdentifiers(fact)),
-            ...(fact.location ? { location: fact.location } : {}),
-            ...(fact.affectedKey ? { affectedKey: sanitizeFactConfigKey(fact.affectedKey) } : {}),
-            ...(fact.message
-              ? {
-                  message:
-                    updatePreflightDetailMessage(fact.code) ??
-                    (fact.errorName
-                      ? redactSupportDiagnosticLine(fact.message, context)
-                      : redactPublicSupportDiagnosticLine(fact.message, context)),
-                }
-              : {}),
-          }),
-        ),
+        normalizeUpdateFailureFacts(step.failureFacts ?? [], context.env)
+          .filter((fact) => fact.check !== "npm")
+          .map(async (fact) =>
+            formatUpdateFailureFact({
+              ...(await projectPublicUpdateFailureIdentifiers(fact)),
+              ...(fact.location ? { location: fact.location } : {}),
+              ...(fact.destination ? { destination: fact.destination } : {}),
+              ...(fact.affectedKey ? { affectedKey: sanitizeFactConfigKey(fact.affectedKey) } : {}),
+              ...(fact.message
+                ? {
+                    message:
+                      updatePreflightDetailMessage(fact.code) ??
+                      (fact.errorName
+                        ? redactSupportDiagnosticLine(fact.message, context)
+                        : redactPublicSupportDiagnosticLine(fact.message, context)),
+                  }
+                : {}),
+            }),
+          ),
       )),
     );
   }
