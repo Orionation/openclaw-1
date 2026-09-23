@@ -341,6 +341,33 @@ export function createRetiredModelRefRepairResolver(params: {
     if (!successor) {
       return { kind: "clear", provider, modelRef: canonical, retirementScope };
     }
+    // Verify the successor is supported on this install before writing it.
+    // Use the same auth-resolution context that proved the source retirement,
+    // rather than suppression absence, which only means "no suppression rule
+    // applies" — not "the model is missing" (catalog-only successors like
+    // xai/grok-4.7 have no suppression rule but are perfectly valid).
+    //
+    // Authoritative `availability === false` means the successor requires an
+    // account tier, region, or plugin version not present.  Unknown/transient
+    // availability (undefined) must still migrate — the operator can fix auth
+    // after the reference is written.  Only a definitive negative blocks.
+    const successorRef = `${provider}/${successor}`;
+    const successorAuth = owner
+      .auth(input.authProfileId ?? parsed.profile)
+      .evaluateRuntimeModelAuth(provider, {
+        modelId: successor,
+        pinnedProfileId: input.authProfileId ?? parsed.profile,
+      });
+    if (successorAuth.availabilityAuthoritative && successorAuth.availability === false) {
+      warn(
+        `Retained retired model reference "${canonical}" for agent "${agentId ?? "(default)"}": ` +
+          `the catalog successor "${successorRef}" is not available on this install ` +
+          `(${successorAuth.unavailableReason ?? "account or plugin version mismatch"}). ` +
+          `To migrate, allow "${successorRef}" on the relevant auth profile or choose a ` +
+          `supported model explicitly and rerun openclaw doctor --fix.`,
+      );
+      return preserved;
+    }
     const modelRef = `${provider}/${successor}`;
     return validatePolicy({
       kind: "replace",
