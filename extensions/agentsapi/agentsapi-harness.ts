@@ -7,6 +7,8 @@ import {
   createAgentHarnessAttemptLifecycle,
   emitAgentHarnessAttemptEvent,
   selectSupportedReasoningEffort,
+  AgentHarnessProjectionSettlement,
+  racePromiseWithAbortSignal,
   type AgentHarnessAttemptTimeout,
 } from "openclaw/plugin-sdk/agent-harness-attempt-runtime";
 import {
@@ -22,6 +24,7 @@ import {
   resolveAgentDir,
   runAgentEndSideEffects,
   runAgentHarnessLlmOutputHook,
+  sanitizeToolArgs,
   setActiveEmbeddedRun,
   type AgentHarnessAttemptParamsV2,
   type AgentHarnessAttemptResult,
@@ -186,13 +189,46 @@ async function runAgentsApiSession(
     assertOwnerCurrent();
     controller.signal.throwIfAborted();
   };
+  let finalizingProjection = false;
+  let finalizingProjectionSignal: AbortSignal | undefined;
+  const assertProjectionCurrent = () => {
+    assertOwnerCurrent();
+    if (finalizingProjection) {
+      finalizingProjectionSignal?.throwIfAborted();
+    } else {
+      controller.signal.throwIfAborted();
+    }
+  };
+  let lastToolError: AgentHarnessAttemptResult["lastToolError"];
+  let toolTerminalObserved = false;
+  const observeToolTerminal = params.observeToolTerminal;
+  const runParams: AgentHarnessAttemptParamsV2 = observeToolTerminal
+    ? {
+        ...params,
+        observeToolTerminal: (observation) => {
+          assertProjectionCurrent();
+          const resolution = observeToolTerminal(observation);
+          assertProjectionCurrent();
+          toolTerminalObserved = true;
+          lastToolError = resolution.lastToolError;
+          return resolution;
+        },
+      }
+    : params;
   let timeout: AgentHarnessAttemptTimeout | undefined;
+  let settling = false;
+  let settlementDeadlineAtMs: number | undefined;
   const deadlines = createAgentHarnessAttemptDeadlineController({
     startedAtMs,
     timeoutMs: params.timeoutMs,
     settlementTimeoutMs: 30_000,
     signal: controller.signal,
-    onDeadlineChanged: params.onAttemptDeadlineChanged,
+    onDeadlineChanged: (deadline) => {
+      if (settling && deadline.kind === "bounded") {
+        settlementDeadlineAtMs = deadline.deadlineAtMs;
+      }
+      params.onAttemptDeadlineChanged?.(deadline);
+    },
     onTimeout: (expired) => {
       timeout = expired;
       const error = new Error(`Agents API ${expired.kind} timed out`);
@@ -200,6 +236,10 @@ async function runAgentsApiSession(
       cancellation.abortExplicitly(error);
     },
   });
+  const beginSettlement = () => {
+    settling = true;
+    deadlines.beginSettlement(Date.now());
+  };
   const emitEvent = (
     event: Parameters<NonNullable<AgentHarnessAttemptParamsV2["onAgentEvent"]>>[0],
   ) => emitAgentHarnessAttemptEvent(params, event, { label: "Agents API", log: embeddedAgentLog });
@@ -216,6 +256,22 @@ async function runAgentsApiSession(
   let reply: ReturnType<typeof createAgentsApiMessageProjection>["reply"] | undefined;
   let projection: ReturnType<typeof createAgentsApiMessageProjection> | undefined;
   let usageRecorded = false;
+  let projectionClosed = false;
+  const projectionSettlement = new AgentHarnessProjectionSettlement(
+    runParams,
+    () => {
+      if (projectionClosed || controller.signal.aborted) {
+        return false;
+      }
+      try {
+        assertOwnerCurrent();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { label: "Agents API" },
+  );
   let terminalTurnId: string | undefined;
   const toolCleanups: Array<(reason: string) => Promise<void>> = [];
   let toolSurface: ReturnType<typeof buildAgentsApiToolSurface> | undefined;
@@ -262,8 +318,11 @@ async function runAgentsApiSession(
       params.agentId,
     );
     assertCurrent();
-    const surface = buildAgentsApiToolSurface(params, controller.signal, assertCurrent, (cleanup) =>
-      toolCleanups.push(cleanup),
+    const surface = buildAgentsApiToolSurface(
+      runParams,
+      controller.signal,
+      assertCurrent,
+      (cleanup) => toolCleanups.push(cleanup),
     );
     toolSurface = surface;
     const inputs = await prepareInputs(
@@ -297,7 +356,16 @@ async function runAgentsApiSession(
           .join("\n\n"),
         params.model.id,
         reasoningEffort,
-        { functions: surface.declarations, files: inputs.files },
+        {
+          functions: surface.declarations,
+          files: inputs.files,
+          reasoning: {
+            effort: reasoningEffort,
+            ...(params.reasoningLevel && params.reasoningLevel !== "off"
+              ? { summary: "auto" }
+              : {}),
+          },
+        },
       );
       assertCurrent();
       await bind({ sessionId: remoteSessionId, authFingerprint: fingerprint });
@@ -308,10 +376,16 @@ async function runAgentsApiSession(
     if (!creatingSession && inputs.files.length) {
       await uploadInputs(client, remoteSessionId, inputs.files, assertCurrent, controller.signal);
     }
-    projection = createAgentsApiMessageProjection(remoteSessionId, (event) => {
-      void emitEvent(event);
-    });
-    const messageProjection = projection;
+    projection = createAgentsApiMessageProjection(
+      projectionSettlement.params,
+      remoteSessionId,
+      async (event) => {
+        assertCurrent();
+        await emitEvent(event);
+        assertCurrent();
+      },
+      assertProjectionCurrent,
+    );
     reply = projection.reply;
     native = createAgentsApiSession({
       client,
@@ -320,31 +394,44 @@ async function runAgentsApiSession(
       sessionId: remoteSessionId,
       signal: controller.signal,
       assertCurrent,
-      onSettled: () => deadlines.beginSettlement(Date.now()),
+      onSettled: beginSettlement,
+      onReconcile: (turn, items) =>
+        projection!.reconcile(turn, items, { presentation: !finalizingProjection }),
       onUsageError: (error) =>
         embeddedAgentLog.warn("Agents API token accounting unavailable", { error }),
       executeFunction: async (call) => {
         startedToolCount++;
-        void emitEvent({
+        await emitEvent({
           stream: "tool",
-          data: { phase: "start", name: call.name, toolCallId: call.call_id },
+          data: {
+            phase: "start",
+            name: call.name,
+            toolCallId: call.call_id,
+            args: sanitizeToolArgs(call.arguments),
+          },
         });
+        assertCurrent();
         return surface.execute(call);
       },
-      onFunctionResult: (call, result) => {
+      onFunctionResult: async (call, result) => {
         completedToolCount++;
-        void emitEvent({
+        await emitEvent({
           stream: "tool",
           data: {
             phase: "result",
             name: call.name,
             toolCallId: call.call_id,
             isError: !result.success,
+            result: {
+              content: [{ type: "text", text: result.success ? result.output : result.error }],
+            },
           },
         });
+        assertCurrent();
       },
-      onEvent: (event) => {
-        messageProjection.observe(event);
+      onEvent: async (event) => {
+        await projection!.observe(event);
+        assertCurrent();
         params.onRunProgress?.({
           reason: event.type,
           provider: "openai",
@@ -358,7 +445,9 @@ async function runAgentsApiSession(
       [
         buildCurrentInboundPrompt({ context: params.currentInboundContext, prompt: params.prompt }),
         inputs.mappingText,
-      ].filter(Boolean).join("\n\n"),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       async () => {
         await params.userTurnTranscriptRecorder?.persistApproved();
       },
@@ -383,7 +472,7 @@ async function runAgentsApiSession(
         assertCurrent,
         controller.signal,
       );
-      await projection.commit(params, result.turn, items, assertCurrent);
+      await projection.commit(result.turn, items);
       assertCurrent();
     }
   } catch (error) {
@@ -398,7 +487,20 @@ async function runAgentsApiSession(
       embeddedAgentLog.warn("Agents API session failed", { error });
     }
   } finally {
+    beginSettlement();
+    // Reuse the owner's absolute settlement boundary. After an upstream abort
+    // closes that owner, one cleanup budget starts before native retirement.
+    const cleanupMs = Math.max(
+      0,
+      Math.min(30_000, (settlementDeadlineAtMs ?? Date.now() + 30_000) - Date.now()),
+    );
+    const cleanupSignal =
+      cleanupMs > 0
+        ? AbortSignal.timeout(cleanupMs)
+        : AbortSignal.abort(new Error("Agents API settlement timed out"));
     try {
+      // Retirement retains the native binding lease until admitted POST/cancel
+      // work settles under its API timeouts; early release could cancel a successor.
       await native?.close();
     } catch (error) {
       terminal = { kind: "failed", source: "prompt", error };
@@ -412,6 +514,40 @@ async function runAgentsApiSession(
       }
     } catch (error) {
       terminal = { kind: "failed", source: "prompt", error };
+    }
+    if ((controller.signal.aborted || terminal.kind !== "ok") && native && projection) {
+      let ownerCurrent = false;
+      try {
+        assertOwnerCurrent();
+        ownerCurrent = true;
+      } catch {
+        // Retired authority cannot publish evidence into a successor session.
+      }
+      if (ownerCurrent) {
+        finalizingProjection = true;
+        finalizingProjectionSignal = cleanupSignal;
+        try {
+          await native.reconcileAfterClose(cleanupSignal);
+        } catch (error) {
+          embeddedAgentLog.warn("Agents API terminal history reconciliation failed", { error });
+        } finally {
+          finalizingProjection = false;
+          finalizingProjectionSignal = undefined;
+        }
+      }
+    }
+    try {
+      await racePromiseWithAbortSignal(projectionSettlement.drain(), cleanupSignal);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        terminal = { kind: "failed", source: "prompt", error };
+      }
+    }
+    projectionClosed = true;
+    if (timeout) {
+      terminal = { kind: "timeout", phase: "prompt", source: "runtime", aborted: true };
+    } else if (terminal.kind === "ok" && controller.signal.aborted) {
+      terminal = { kind: "aborted", source: params.abortSignal?.aborted ? "external" : "runtime" };
     }
     cancellation.freezeTerminalOutcome();
     deadlines.dispose();
@@ -446,8 +582,10 @@ async function runAgentsApiSession(
       reply?.lastAssistant && terminalTurnId
         ? `agentsapi:${remoteSessionId}:${terminalTurnId}`
         : undefined,
-    toolMetas: toolSurface?.toolMetas ?? [],
-    lastToolError: toolSurface?.lastToolError,
+    toolMetas: [...(projection?.toolMetas ?? []), ...(toolSurface?.toolMetas ?? [])],
+    lastToolError: toolTerminalObserved
+      ? lastToolError
+      : (toolSurface?.lastToolError ?? projection?.lastToolError),
     ...toolSurface?.runtimeFacts,
     didSendViaMessagingTool: false,
     messagingToolSentTexts: [],
@@ -466,15 +604,18 @@ async function runAgentsApiSession(
           : toolSurface?.delivery.toolTrustedLocalMedia,
     }),
     cloudCodeAssistFormatError: false,
-    attemptUsage: reply?.usage,
+    attemptUsage: projection?.tokenUsage,
+    agentHarnessResultClassification: projection?.resultClassification,
     replayMetadata: {
       hadPotentialSideEffects: native?.wasSubmitted() ?? false,
       replaySafe: !native?.wasSubmitted(),
     },
     itemLifecycle: {
-      startedCount: startedToolCount,
-      completedCount: completedToolCount,
-      activeCount: Math.max(0, startedToolCount - completedToolCount),
+      startedCount: startedToolCount + (projection?.itemLifecycle.startedCount ?? 0),
+      completedCount: completedToolCount + (projection?.itemLifecycle.completedCount ?? 0),
+      activeCount:
+        Math.max(0, startedToolCount - completedToolCount) +
+        (projection?.itemLifecycle.activeCount ?? 0),
     },
   };
   assertHarnessCurrent();

@@ -1,12 +1,14 @@
 import { setTimeout as delay } from "node:timers/promises";
-import type { AgentSessionEvent } from "openai/resources/beta/agents/agents";
 import type { Turn } from "openai/resources/beta/agents/sessions/turns";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   AgentsApiClient,
-  type AgentsApiTurn,
+  AgentsApiError,
+  type AgentsApiEvent,
   type AgentsApiFunctionCall,
   type AgentsApiFunctionResult,
+  type AgentsApiItem,
 } from "./agentsapi-client.js";
 
 /** Native input receipts and session idle, together, establish Agents API completion. */
@@ -16,28 +18,37 @@ export function createAgentsApiSession(options: {
   sessionId: string;
   signal: AbortSignal;
   assertCurrent: () => void;
-  onEvent: (event: AgentSessionEvent) => void;
+  onEvent: (event: AgentsApiEvent) => void | Promise<void>;
+  onReconcile?: (turn: Turn, items: AgentsApiItem[]) => Promise<void>;
   onSettled?: () => void;
   onUsageError?: (error: unknown) => void;
   executeFunction?: (call: AgentsApiFunctionCall) => Promise<FunctionExecutionResult>;
-  onFunctionResult?: (call: AgentsApiFunctionCall, result: FunctionExecutionResult) => void;
+  onFunctionResult?: (
+    call: AgentsApiFunctionCall,
+    result: FunctionExecutionResult,
+  ) => void | Promise<void>;
 }) {
   const { client, cleanupClient, sessionId, signal, assertCurrent } = options;
   let streamController = new AbortController();
   let submitted = false;
   let stopped = false;
+  let closed = false;
   let settled = false;
-  let rootTurn: Turn | AgentsApiTurn | undefined;
-  let turnFailure: string | undefined;
+  let rootTurn: Turn | AgentsApiEvent["turn"];
+  let turnFailure: AgentsApiError | undefined;
   let cancelled = false;
   let submission: Promise<void> = Promise.resolve();
   let admittedSubmission: Promise<void> = Promise.resolve();
   let cancellation: Promise<void> | undefined;
   let admittedMessageCount = 0;
+  let baselineTurnId: string | undefined;
+  let baselineCaptured = false;
   const observedInputItems = new Set<string>();
   const coordinatorTurnIds = new Set<string>();
+  const excludedTurnIds = new Set<string>();
+  const itemTurnIds = new Map<string, string>();
+  const excludedItemIds = new Set<string>();
   let latestInputTurnId: string | undefined;
-  let baselineTurnId: string | undefined;
   let usageTurns: Promise<Turn[]> | undefined;
   let terminatedByTool = false;
 
@@ -92,17 +103,69 @@ export function createAgentsApiSession(options: {
   };
   signal.addEventListener("abort", onAbort, { once: true });
 
-  const collectInputs = async (turnId: string) => {
-    for (const item of await client.items(sessionId, turnId, signal)) {
-      if (item.type === "message" && item.role === "user" && item.id) {
-        observedInputItems.add(item.id);
-      }
-    }
-  };
   const assertSessionUsable = (session: { status: string; error: string | null }) => {
     if (session.status === "failed") {
       throw new Error(session.error ?? "Agents API session failed");
     }
+  };
+  const readAdmittedTurns = async (readClient: AgentsApiClient, readSignal: AbortSignal) => {
+    const turns = await readClient.turns(sessionId, readSignal, baselineTurnId);
+    readSignal.throwIfAborted();
+    for (const turn of turns) {
+      coordinatorTurnIds.add(turn.id);
+      excludedTurnIds.delete(turn.id);
+    }
+    const latest = turns.at(-1);
+    latestInputTurnId = latest?.id;
+    rootTurn = latest && isTerminalTurn(latest.status) ? latest : undefined;
+    turnFailure =
+      latest?.status === "failed"
+        ? new AgentsApiError(latest.error?.message ?? "Agents API turn failed", latest.error ?? {})
+        : undefined;
+    cancelled = !terminatedByTool && latest?.status === "cancelled";
+    return turns;
+  };
+  const readSavedState = async (readClient: AgentsApiClient, readSignal: AbortSignal) => {
+    const turns = await readAdmittedTurns(readClient, readSignal);
+    const entries: Array<{ turn: Turn; items: AgentsApiItem[] }> = [];
+    const inputItems = new Set<string>();
+    for (const turn of turns) {
+      const items = await readClient.items(sessionId, turn.id, readSignal);
+      readSignal.throwIfAborted();
+      for (const item of items) {
+        if (item.turn_id && item.turn_id !== turn.id) {
+          throw new Error("Agents API saved item belongs to a different turn");
+        }
+        rememberItemTurn(item.id, turn.id);
+        if (item.type === "message" && item.role === "user") {
+          inputItems.add(item.id);
+        }
+      }
+      entries.push({ turn, items });
+    }
+    observedInputItems.clear();
+    for (const id of inputItems) {
+      observedInputItems.add(id);
+    }
+    return { turns, entries };
+  };
+  const projectSavedState = async (
+    entries: Array<{ turn: Turn; items: AgentsApiItem[] }>,
+    readSignal: AbortSignal,
+  ) => {
+    for (const { turn, items } of entries) {
+      readSignal.throwIfAborted();
+      await options.onReconcile?.(turn, items);
+      readSignal.throwIfAborted();
+    }
+  };
+  const rememberItemTurn = (itemId: string, turnId: string) => {
+    const previous = itemTurnIds.get(itemId);
+    if (previous && previous !== turnId) {
+      throw new Error("Agents API item belongs to different admitted turns");
+    }
+    itemTurnIds.set(itemId, turnId);
+    excludedItemIds.delete(itemId);
   };
 
   return {
@@ -144,8 +207,12 @@ export function createAgentsApiSession(options: {
     async run(prompt: string, persistInput: () => Promise<void>, onSubmitted: () => void) {
       signal.throwIfAborted();
       baselineTurnId = (await client.turns(sessionId, signal, undefined, true))[0]?.id;
+      baselineCaptured = true;
+      if (baselineTurnId) {
+        excludedTurnIds.add(baselineTurnId);
+      }
       const relayedCalls = new Set<string>();
-      const relayFunctions = async () => {
+      const relayFunctions = async (): Promise<void> => {
         assertCurrent();
         signal.throwIfAborted();
         if (!options.executeFunction) {
@@ -155,10 +222,8 @@ export function createAgentsApiSession(options: {
         if (!calls.length) {
           return;
         }
-        const turns = await client.turns(sessionId, signal, baselineTurnId);
-        for (const turn of turns) {
-          coordinatorTurnIds.add(turn.id);
-        }
+        const turns = await readAdmittedTurns(client, signal);
+        assertCurrent();
         const latestTurn = turns.at(-1);
         if (!latestTurn) {
           throw new Error("Agents API function request has no current attempt root turn");
@@ -195,24 +260,22 @@ export function createAgentsApiSession(options: {
           });
           void submission.catch(() => {});
           await submission;
-          options.onFunctionResult?.(call, result);
+          await options.onFunctionResult?.(call, result);
+          assertCurrent();
           if (result.terminate || result.sourceReplyDelivered) {
             // Acknowledge the host's delivered reply before retiring native work.
             await cleanupClient.cancel(sessionId, AbortSignal.timeout(30_000));
-            const session = await client.session(sessionId, signal);
-            if (session.status !== "idle") {
+            terminatedByTool = true;
+            await settleFromSavedState();
+            if (
+              !settled ||
+              !rootTurn ||
+              !["completed", "cancelled"].includes(rootTurn.status ?? "")
+            ) {
               throw new Error(
-                session.error ?? "Agents API tool termination did not establish native idle",
+                "Agents API tool termination did not settle its native root turn and inputs",
               );
             }
-            const nativeRoot = await client.turn(sessionId, call.turn_id, signal);
-            rootTurn = nativeRoot;
-            if (!["completed", "cancelled"].includes(nativeRoot.status)) {
-              throw new Error("Agents API tool termination did not settle its native root turn");
-            }
-            terminatedByTool = true;
-            cancelled = false;
-            settled = true;
             streamController.abort();
             return;
           }
@@ -224,7 +287,99 @@ export function createAgentsApiSession(options: {
       );
       let nextEvent = events.next();
       void nextEvent.catch(() => {});
-      let reconciledStream = false;
+      const settleFromSavedState = async (recover = false): Promise<void> => {
+        const submissionFence = submission;
+        await submissionFence;
+        assertCurrent();
+        const admittedCount = admittedMessageCount;
+        const snapshot = await readSavedState(client, signal);
+        assertCurrent();
+        const session = await client.session(sessionId, signal);
+        assertCurrent();
+        assertSessionUsable(session);
+        if (session.status === "requires_action") {
+          await relayFunctions();
+          if (settled) {
+            return;
+          }
+        }
+        settled = Boolean(
+          rootTurn &&
+          rootTurn.id === snapshot.turns.at(-1)?.id &&
+          session.status === "idle" &&
+          submissionFence === submission &&
+          admittedCount === admittedMessageCount &&
+          observedInputItems.size === admittedCount,
+        );
+        if (settled) {
+          options.onSettled?.();
+        }
+        if (settled || recover) {
+          await projectSavedState(snapshot.entries, signal);
+          assertCurrent();
+        }
+      };
+      const belongsToAttempt = async (event: AgentsApiEvent) => {
+        if (event.item && event.item_id && event.item.id !== event.item_id) {
+          throw new Error("Agents API event contains different item identities");
+        }
+        const itemId = event.item?.id ?? event.item_id;
+        const turnIds = new Set(
+          [
+            event.turn?.id,
+            event.turn_id,
+            event.item?.turn_id,
+            itemId ? itemTurnIds.get(itemId) : undefined,
+          ].filter((id): id is string => typeof id === "string" && id.length > 0),
+        );
+        if (turnIds.size > 1) {
+          throw new Error("Agents API event contains different turn identities");
+        }
+        const turnId = turnIds.values().next().value;
+        if (!turnId) {
+          if (itemId) {
+            if (excludedItemIds.has(itemId)) {
+              return false;
+            }
+            // Command deltas can omit their turn; saved admitted items retain that correlation.
+            const snapshot = await readSavedState(client, signal);
+            assertCurrent();
+            if (!itemTurnIds.has(itemId)) {
+              excludedItemIds.add(itemId);
+              return false;
+            }
+            await projectSavedState(snapshot.entries, signal);
+            assertCurrent();
+            return true;
+          }
+          if (event.item || event.type === "agent.output.command_execution_output.delta") {
+            throw new Error("Agents API output event is missing its turn ID");
+          }
+          return true;
+        }
+        if (excludedTurnIds.has(turnId)) {
+          if (itemId) {
+            excludedItemIds.add(itemId);
+          }
+          return false;
+        }
+        if (!coordinatorTurnIds.has(turnId)) {
+          // A delayed same-session event is not proof that this attempt admitted its turn.
+          await readAdmittedTurns(client, signal);
+          assertCurrent();
+          if (!coordinatorTurnIds.has(turnId)) {
+            excludedTurnIds.add(turnId);
+            if (itemId) {
+              excludedItemIds.add(itemId);
+            }
+            return false;
+          }
+        }
+        if (event.item) {
+          rememberItemTurn(event.item.id, turnId);
+        }
+        return true;
+      };
       try {
         await persistInput();
         assertCurrent();
@@ -232,93 +387,64 @@ export function createAgentsApiSession(options: {
         await submit(prompt);
         onSubmitted();
         while (!settled) {
-          const chunk = await nextEvent;
-          if (chunk.done) {
-            reconciledStream = true;
-            streamController.abort();
-            await events.return(undefined);
-            await delay(500, undefined, { signal });
-            streamController = new AbortController();
-            // Subscribe before reconciliation: Agents API streams do not replay.
-            events = await client.subscribe(
-              sessionId,
-              AbortSignal.any([signal, streamController.signal]),
-            );
-            nextEvent = events.next();
-            void nextEvent.catch(() => {});
-            await submission;
-            const admittedCount = admittedMessageCount;
-            const turns = await client.turns(sessionId, signal, baselineTurnId);
-            for (const turn of turns) {
-              coordinatorTurnIds.add(turn.id);
-              await collectInputs(turn.id);
-            }
-            const latestTurn = turns.at(-1);
-            if (latestTurn) {
-              latestInputTurnId = latestTurn.id;
-              rootTurn = ["completed", "failed", "cancelled"].includes(latestTurn.status)
-                ? latestTurn
-                : undefined;
-              turnFailure =
-                latestTurn.status === "failed"
-                  ? (latestTurn.error?.message ?? "Agents API turn failed")
-                  : undefined;
-              cancelled = latestTurn.status === "cancelled";
-            }
-            const session = await client.session(sessionId, signal);
+          let chunk: IteratorResult<AgentsApiEvent>;
+          try {
+            chunk = await nextEvent;
+          } catch (error) {
+            signal.throwIfAborted();
             assertCurrent();
-            assertSessionUsable(session);
-            if (session.status === "requires_action") {
-              await relayFunctions();
-              if (settled) {
+            if (!isAgentsApiTransportDisconnect(error)) {
+              throw error;
+            }
+            chunk = { done: true, value: undefined };
+          }
+          if (chunk.done) {
+            streamController.abort();
+            // A broken reader can reject return() as well as next(). Retire only
+            // this transport; the admitted native work remains in the session.
+            await events.return(undefined).catch((error: unknown) => {
+              if (!isAgentsApiTransportDisconnect(error)) {
+                throw error;
+              }
+            });
+            while (true) {
+              await delay(500, undefined, { signal });
+              assertCurrent();
+              streamController = new AbortController();
+              try {
+                // Subscribe before reconciliation: Agents API streams do not replay.
+                events = await client.subscribe(
+                  sessionId,
+                  AbortSignal.any([signal, streamController.signal]),
+                );
                 break;
+              } catch (error) {
+                streamController.abort();
+                signal.throwIfAborted();
+                assertCurrent();
+                if (!isAgentsApiTransportDisconnect(error)) {
+                  throw error;
+                }
               }
             }
-            settled = Boolean(
-              rootTurn &&
-              session.status === "idle" &&
-              admittedCount === admittedMessageCount &&
-              observedInputItems.size >= admittedMessageCount,
-            );
+            nextEvent = events.next();
+            void nextEvent.catch(() => {});
+            await settleFromSavedState(true);
             continue;
           }
           const event = chunk.value;
           nextEvent = events.next();
           void nextEvent.catch(() => {});
           assertCurrent();
-          options.onEvent(event);
-          if (rootTurn && event.type === "agent.session.idle") {
-            await submission;
-            assertCurrent();
-            if (observedInputItems.size < admittedMessageCount) {
-              for (const turnId of coordinatorTurnIds) {
-                await collectInputs(turnId);
-              }
-            }
-            if (
-              observedInputItems.size < admittedMessageCount ||
-              rootTurn.id !== latestInputTurnId
-            ) {
-              continue;
-            }
-            if (reconciledStream) {
-              const session = await client.session(sessionId, signal);
-              assertSessionUsable(session);
-              if (session.status !== "idle") {
-                continue;
-              }
-            }
-            settled = true;
-            break;
+          if (!(await belongsToAttempt(event))) {
+            continue;
           }
-          if (event.type === "agent.session.turn.created" && event.turn?.subagent_id === null) {
-            if (!coordinatorTurnIds.has(event.turn.id)) {
-              coordinatorTurnIds.add(event.turn.id);
-              latestInputTurnId = event.turn.id;
-              rootTurn = undefined;
-              turnFailure = undefined;
-              cancelled = false;
-            }
+          assertCurrent();
+          await options.onEvent(event);
+          assertCurrent();
+          if (event.type === "agent.session.idle") {
+            await settleFromSavedState();
+            continue;
           }
           if (
             (event.type === "agent.session.turn.item.added" ||
@@ -329,17 +455,17 @@ export function createAgentsApiSession(options: {
             !observedInputItems.has(event.item.id)
           ) {
             observedInputItems.add(event.item.id);
-            const inputTurnId = event.item.turn_id ?? event.turn_id;
+            const inputTurnId =
+              event.item.turn_id ?? event.turn_id ?? itemTurnIds.get(event.item.id);
             if (!inputTurnId) {
               throw new Error("Agents API input item is missing its turn ID");
             }
-            if (!latestInputTurnId) {
-              coordinatorTurnIds.add(inputTurnId);
-              latestInputTurnId = inputTurnId;
-            }
           }
           if (event.type === "error") {
-            throw new Error(event.error?.message ?? "Agents API stream error");
+            throw new AgentsApiError(
+              event.error?.message ?? "Agents API stream error",
+              event.error,
+            );
           }
           if (event.type === "agent.session.requires_action") {
             await relayFunctions();
@@ -349,23 +475,32 @@ export function createAgentsApiSession(options: {
             continue;
           }
           if (["agent.session.failed", "agent.session.environment.failed"].includes(event.type)) {
-            throw new Error(`Agents API MVP cannot continue: ${event.type}`);
+            const nativeError = event.environment?.error ?? event.error;
+            throw new AgentsApiError(
+              nativeError?.message ??
+                event.session?.error ??
+                `Agents API cannot continue: ${event.type}`,
+              nativeError ?? {},
+            );
           }
           if (
             (event.type === "agent.session.turn.completed" ||
               event.type === "agent.session.turn.failed" ||
               event.type === "agent.session.turn.cancelled") &&
-            event.turn.subagent_id === null &&
+            event.turn?.subagent_id === null &&
             event.turn.id === latestInputTurnId
           ) {
             rootTurn = event.turn;
             turnFailure = event.type.endsWith(".failed")
-              ? (event.turn.error?.message ?? "Agents API turn failed")
+              ? new AgentsApiError(
+                  event.turn.error?.message ?? "Agents API turn failed",
+                  event.turn.error ?? {},
+                )
               : undefined;
             cancelled = event.type.endsWith(".cancelled");
+            await settleFromSavedState();
           }
         }
-        options.onSettled?.();
       } finally {
         streamController.abort();
         await events.return(undefined);
@@ -376,9 +511,26 @@ export function createAgentsApiSession(options: {
         );
       }
       if (turnFailure) {
-        throw new Error(turnFailure);
+        throw turnFailure;
       }
       return { turn: rootTurn, cancelled, terminatedByTool };
+    },
+    async reconcileAfterClose(cleanupSignal: AbortSignal): Promise<Turn | undefined> {
+      if (!closed) {
+        throw new Error("Agents API canonical cleanup requires a closed session attempt");
+      }
+      if (!submitted || !baselineCaptured) {
+        return undefined;
+      }
+      cleanupSignal.throwIfAborted();
+      const session = await cleanupClient.session(sessionId, cleanupSignal);
+      cleanupSignal.throwIfAborted();
+      if (session.status !== "idle" && session.status !== "failed") {
+        throw new Error("Agents API canonical cleanup requires native work to be retired");
+      }
+      const snapshot = await readSavedState(cleanupClient, cleanupSignal);
+      await projectSavedState(snapshot.entries, cleanupSignal);
+      return snapshot.turns.at(-1);
     },
     async close() {
       signal.removeEventListener("abort", onAbort);
@@ -388,6 +540,7 @@ export function createAgentsApiSession(options: {
       }
       await cancellation;
       stopped = true;
+      closed = true;
     },
   };
 }
@@ -396,3 +549,22 @@ type FunctionExecutionResult = AgentsApiFunctionResult & {
   sourceReplyDelivered?: true;
   terminate?: true;
 };
+
+function isTerminalTurn(status: string): boolean {
+  return ["completed", "failed", "cancelled"].includes(status);
+}
+
+function isAgentsApiTransportDisconnect(error: unknown): boolean {
+  if (!(error instanceof Error) || error instanceof AgentsApiError) {
+    return false;
+  }
+  const code = asOptionalRecord(error)?.code;
+  if (
+    (typeof code === "string" &&
+      ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "UND_ERR_SOCKET"].includes(code)) ||
+    (error instanceof TypeError && ["terminated", "fetch failed"].includes(error.message))
+  ) {
+    return true;
+  }
+  return error.cause instanceof Error && isAgentsApiTransportDisconnect(error.cause);
+}
