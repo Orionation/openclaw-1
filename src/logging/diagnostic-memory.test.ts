@@ -36,6 +36,12 @@ function memoryUsage(overrides: Partial<NodeJS.MemoryUsage>): NodeJS.MemoryUsage
   };
 }
 
+const workerLifecycle: ReturnType<
+  typeof workerMemory.sampleTrackedWorkerMemory
+>["workerLifecycle"] = [
+  { script: "sqlite-store.worker.js", started: 3, retired: [{ reason: "closed", count: 3 }] },
+];
+
 describe("diagnostic memory", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -45,6 +51,15 @@ describe("diagnostic memory", () => {
     uninstallDiagnosticStabilityFatalHook();
     resetDiagnosticStabilityRecorderForTest();
     resetLogger();
+    // Cumulative Worker history survives earlier test files even when no Worker remains alive.
+    vi.spyOn(workerMemory, "sampleTrackedWorkerMemory").mockReturnValue({
+      workerCount: 0,
+      workerHeapSampledCount: 0,
+      workerHeapTotalBytes: 0,
+      workerHeapUsedBytes: 0,
+      workerHeaps: [],
+      workerLifecycle: structuredClone(workerLifecycle),
+    });
   });
 
   afterEach(() => {
@@ -84,7 +99,7 @@ describe("diagnostic memory", () => {
           workerHeapTotalBytes: 0,
           workerHeapUsedBytes: 0,
           workerHeaps: [],
-          workerLifecycle: [],
+          workerLifecycle,
           externalBytes: 10,
           heapTotalBytes: 80,
           rssBytes: 4096,
@@ -127,7 +142,7 @@ describe("diagnostic memory", () => {
           workerHeapTotalBytes: 0,
           workerHeapUsedBytes: 0,
           workerHeaps: [],
-          workerLifecycle: [],
+          workerLifecycle,
           externalBytes: 10,
           heapTotalBytes: 80,
           heapUsedBytes: 40,
@@ -149,7 +164,7 @@ describe("diagnostic memory", () => {
           workerHeapTotalBytes: 0,
           workerHeapUsedBytes: 0,
           workerHeaps: [],
-          workerLifecycle: [],
+          workerLifecycle,
           externalBytes: 10,
           heapTotalBytes: 80,
           heapUsedBytes: 40,
@@ -516,7 +531,7 @@ describe("diagnostic memory", () => {
         workerHeapTotalBytes: 0,
         workerHeapUsedBytes: 0,
         workerHeaps: [],
-        workerLifecycle: [],
+        workerLifecycle,
         externalBytes: 10,
         heapTotalBytes: 80,
         heapUsedBytes: 40,
@@ -572,7 +587,7 @@ describe("diagnostic memory", () => {
   });
 
   it("logs memory pressure events through the gateway subsystem", async () => {
-    vi.spyOn(workerMemory, "sampleTrackedWorkerMemory").mockReturnValue({
+    vi.mocked(workerMemory.sampleTrackedWorkerMemory).mockReturnValue({
       workerCount: 7,
       workerHeapSampledCount: 7,
       workerHeapTotalBytes: 5600,
