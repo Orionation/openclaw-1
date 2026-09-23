@@ -1,10 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import OpenAI from "openai";
-import type {
-  AgentReasoningParam,
-  AgentSessionEvent,
-} from "openai/resources/beta/agents/agents";
+import type { AgentReasoningParam, AgentSessionEvent } from "openai/resources/beta/agents/agents";
 import type { Turn } from "openai/resources/beta/agents/sessions/turns";
 import { responseWithRelease } from "openclaw/plugin-sdk/fetch-runtime";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
