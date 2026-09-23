@@ -532,7 +532,7 @@ export async function beginSessionWorkAdmission(params: {
   resolveGatewayContext?: GatewayContextResolver;
   assertAllowed: (signal: AbortSignal) => Promise<void> | void;
   /** Final writer-ordered validation; use when one-time effects must not run during the first check. */
-  revalidateAllowed?: (signal: AbortSignal) => Promise<void> | void;
+  revalidateAllowed?: () => Promise<void> | void;
   onInterrupt?: SessionWorkAdmissionInterrupt;
   signal?: AbortSignal;
 }): Promise<SessionWorkAdmissionLease> {
@@ -655,9 +655,8 @@ export async function beginSessionWorkAdmission(params: {
           async () => {
             writerBarrierStarted = true;
             signal.throwIfAborted();
-            await lease.run(
-              async () => await (params.revalidateAllowed ?? params.assertAllowed)(signal),
-            );
+            const revalidate = params.revalidateAllowed ?? (() => params.assertAllowed(signal));
+            await lease.run(async () => await revalidate());
           },
           { reentrant: true },
         );
