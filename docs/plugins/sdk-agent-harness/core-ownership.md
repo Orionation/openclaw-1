@@ -206,19 +206,32 @@ same binding. Do not infer a missing value from outer configuration, credentials
 or usage. Host-auth ownership requires this tuple before credential preparation;
 native-auth pending branches may omit it until their native owner selects a model.
 
-Declare `nativeModelPolicySupport: "exact"` only when the harness calls
-`hostCapabilities.bindModelExecution({ provider, model })` with the actual native
-selection before every inference dispatch, including after resume. Observe the
+Declare `nativeModelPolicySupport: "exact"` only when the harness binds the actual
+native selection before every inference dispatch, including after resume. Use
+`hostCapabilities.bindModelExecution({ provider, model })` or the retained-source
+operation below. Observe the
 returned cancellation signal, recheck its assertion after awaited preparation and
 immediately before transport writes and result settlement, and release it after
 execution cleanup. The issuing host must be active when acquiring a binding.
 The issued binding retains the original source until release; host closure blocks
-new acquisitions without revoking accepted native work. Explicit Stop, session
+new direct acquisitions without revoking accepted native work. Explicit Stop, session
 and transport authority, and real source or model-policy revocation still apply.
 A cached pre-resume model is not authority for a different resumed model. Missing
 support rejects native-owned inference when the operator has a model policy.
 The method returns `undefined` when the run has no operator source; ordinary
 host action checks and native turn settlement retain their existing lifetimes.
+
+For accepted work that can select models after foreground completion, acquire
+`hostCapabilities.retainSourceAuthority()` while the host is active. Its
+`bindModelExecution(...)` operation uses the same original source until that work
+releases the retained capability. Each model binding owns its retention and must
+be released after dispatch cleanup; closing the retained work cancels its model
+bindings. The live `modelPolicyRequired` fact supports connection preflight;
+an absent fact means unknown, not unrestricted. The live `sourceIdentity` is an
+opaque equality token for checking whether active inputs share the same original
+source; it never grants execution authority. Release retained authority when
+its work settles, rather than attaching the creator's authority permanently to a
+reusable native thread.
 
 Read the existing private binding synchronously. Call `assertCurrent()` before
 and after the read. Do not discover models, reclaim a generation, start a client,

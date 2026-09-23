@@ -90,12 +90,16 @@ it("keeps retained source authority until independent native work releases it", 
     expect(sourceHolds).toBe(2);
     expect(() => first.assertCurrent()).not.toThrow();
     expect(() => second.assertCurrent()).not.toThrow();
+    expect(first.sourceIdentity).toBe(source.source);
+    expect(second.sourceIdentity).toBe(first.sourceIdentity);
 
     first.release();
     first.release();
     expect(sourceHolds).toBe(1);
     expect(() => first.assertCurrent()).toThrow("no longer active");
+    expect(() => first.sourceIdentity).toThrow("no longer active");
     expect(() => second.assertCurrent()).not.toThrow();
+    expect(second.sourceIdentity).toBe(source.source);
   } finally {
     first?.release();
     second?.release();
@@ -123,6 +127,7 @@ it.each(["source assertion", "source signal", "lifecycle rotation"] as const)(
     });
     const { host, admission } = await createSourceHost(source, foreground.signal);
     const retained = host.capabilities.retainSourceAuthority?.();
+    let modelBinding: ReturnType<NonNullable<typeof host.capabilities.bindModelExecution>>;
     try {
       if (!retained) {
         throw new Error("expected retained source authority");
@@ -132,6 +137,10 @@ it.each(["source assertion", "source signal", "lifecycle rotation"] as const)(
       admission.close();
       foreground.abort();
       expect(() => retained.assertCurrent()).not.toThrow();
+      modelBinding = retained.bindModelExecution?.({ provider: "fixture", model: "a" });
+      if (!modelBinding) {
+        throw new Error("expected retained model execution authority");
+      }
 
       if (revocation === "source signal") {
         originalSource.abort(revoked);
@@ -145,11 +154,16 @@ it.each(["source assertion", "source signal", "lifecycle rotation"] as const)(
       expect(() => retained.assertCurrent()).toThrow(
         revocation === "lifecycle rotation" ? "no longer active" : revoked,
       );
+      expect(modelBinding.assertCurrent).toThrow();
+      if (revocation === "source assertion") {
+        expect(modelBinding.signal.aborted).toBe(true);
+      }
       current = true;
       expect(() => retained.assertCurrent()).toThrow(
         revocation === "source signal" ? revoked : "no longer active",
       );
     } finally {
+      modelBinding?.release();
       retained?.release();
     }
   },
@@ -163,15 +177,58 @@ it("signals retained work on gateway lifecycle rotation after its foreground clo
   });
   const { host, admission } = await createSourceHost(source);
   const retained = host.capabilities.retainSourceAuthority?.();
+  let modelBinding: ReturnType<NonNullable<typeof host.capabilities.bindModelExecution>>;
   try {
     if (!retained) {
       throw new Error("expected retained source authority");
     }
     host.close();
     admission.close();
+    modelBinding = retained.bindModelExecution?.({ provider: "fixture", model: "a" });
+    if (!modelBinding) {
+      throw new Error("expected retained model execution authority");
+    }
     rotateAgentEventLifecycleGeneration();
     expect(retained.signal?.aborted).toBe(true);
+    expect(modelBinding.signal.aborted).toBe(true);
+    expect(modelBinding.assertCurrent).toThrow("no longer active");
     expect(() => retained.assertCurrent()).toThrow("no longer active");
+  } finally {
+    modelBinding?.release();
+    retained?.release();
+  }
+});
+
+it("releases model authority when its retained work closes during acquisition", async () => {
+  let sourceHolds = 0;
+  let closeDuringRetain: (() => void) | undefined;
+  const source = createAdmittedRunOperatorAuthority({
+    profileId: "guest-source",
+    scopes: ["operator.write"],
+    assertCurrent: () => {},
+    retain: () => {
+      sourceHolds += 1;
+      closeDuringRetain?.();
+      return () => {
+        sourceHolds -= 1;
+      };
+    },
+  });
+  const { host, admission } = await createSourceHost(source);
+  const retained = host.capabilities.retainSourceAuthority?.();
+  try {
+    if (!retained) {
+      throw new Error("expected retained source authority");
+    }
+    host.close();
+    admission.close();
+    expect(sourceHolds).toBe(1);
+
+    closeDuringRetain = retained.release;
+    expect(() => retained.bindModelExecution?.({ provider: "fixture", model: "a" })).toThrow(
+      "no longer active",
+    );
+    expect(sourceHolds).toBe(0);
   } finally {
     retained?.release();
   }

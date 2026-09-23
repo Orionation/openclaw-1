@@ -70,6 +70,39 @@ for the normal OpenAI route and `codex/gpt-*` only when image understanding
 should run through a bounded Codex app-server turn. Doctor rewrites legacy
 Codex GPT refs to `openai/gpt-*`.
 
+### Operator role model permissions
+
+A role's [model policy](/gateway/operator-scopes#named-operator-roles) applies to
+each native inference request, including retries, child turns, ordinary reviews,
+native image and search requests, and compaction. OpenClaw checks the actual model against both the work's original
+permissions and current policy before forwarding it. Verified catalog-to-native
+model mappings remain valid. Removing a model cancels affected inference while
+permitted work continues.
+
+Reusing a native child does not attach its creator's permissions permanently.
+A later turn uses its submitting operator's authority after the earlier turn
+settles. Sending input to an active turn requires the same original authority,
+including follow-up requests that native execution can consume in that turn. Native
+Guardian reviews and configured memory processing keep their existing service
+authority, verified from native request provenance and their owning execution or
+configured service.
+
+Restricted runs require an OpenClaw-owned native inference route. Managed stdio
+connections can retain HTTP or WebSocket Responses providers over public HTTPS;
+already-owned native bindings can reuse that route.
+Provider projection shares the connection's eight-route limit; excess providers
+remain unavailable to restricted native restores, and selecting a new route after
+capacity is reached requires a fresh managed native connection.
+Custom providers need an explicit native `base_url`; query fields use the native
+`query_params` table. Unowned attachments, native local-model providers,
+AWS-signed requests, system-proxy profiles, custom native
+certificate files, and proxy settings that cannot preserve both upstream routing
+and private loopback access cannot establish this guarantee. OpenClaw rejects a
+restricted run on those paths before starting it. Roles without a model policy
+keep their existing native connection behavior. Introducing a model policy while
+an unqualified operator execution is active cancels that execution and its
+unqualified children.
+
 ## Deployment patterns
 
 ### Basic Codex deployment

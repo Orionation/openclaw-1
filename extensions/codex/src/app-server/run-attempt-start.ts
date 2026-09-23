@@ -115,7 +115,10 @@ export async function startCodexAttemptRuntime(resources: CodexAttemptResources)
       agentWorkspaceDeveloperInstructions: context.agentWorkspaceDeveloperInstructions,
       buildFinalConfigPatch: buildNativeHookRelayFinalConfigPatch,
       nativeHookRelayRequired:
-        Boolean(resources.nativeProcessAuthority && nativeToolSurfaceEnabled) ||
+        (nativeToolSurfaceEnabled &&
+          params.pluginHarnessToolPolicyRestricted !== true &&
+          (resources.nativeProcessAuthority !== undefined ||
+            resources.nativeModelAdmissionRequired)) ||
         (connection.options.nativeHookRelay?.enabled !== false &&
           params.pluginHarnessToolPolicyRestricted !== true &&
           connection.nativeHookRelayEvents.includes("pre_tool_use") &&

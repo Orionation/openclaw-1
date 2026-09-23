@@ -1,3 +1,4 @@
+import { createAgentHarnessAttemptCancellation } from "openclaw/plugin-sdk/agent-harness-attempt-runtime";
 import {
   isActiveHarnessContextEngine,
   resolveSandboxContext,
@@ -404,30 +405,12 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
     terminalOutcomeFrozen: false,
     sharedAbortAllowedAfterTerminalOutcome: false,
   };
-  const runAbortController = new AbortController();
-  let attemptAbortNotified = false;
-  const notifyAttemptAbort = () => {
-    if (attemptAbortNotified) {
-      return;
-    }
-    attemptAbortNotified = true;
-    params.onAttemptAbort?.();
-  };
-  const abortExplicitly = (reason: unknown) => {
-    if (terminalState.terminalOutcomeFrozen) {
-      if (terminalState.sharedAbortAllowedAfterTerminalOutcome) {
-        notifyAttemptAbort();
-      }
-      return;
-    }
-    notifyAttemptAbort();
-    terminalState.explicitCancellationObserved = true;
-    terminalState.explicitCancellationReason ??= reason;
-    runAbortController.abort(reason);
-  };
-  const abortFromUpstream = () => {
-    abortExplicitly(params.abortSignal?.reason ?? "upstream_abort");
-  };
+  const cancellation = createAgentHarnessAttemptCancellation({
+    upstreamSignal: params.abortSignal,
+    onAttemptAbort: () => params.onAttemptAbort?.(),
+    state: terminalState,
+  });
+  const { controller: runAbortController, abortExplicitly } = cancellation;
   let detachModelAbort: (() => void) | undefined;
   const releaseModelExecution = () => {
     detachModelAbort?.();
@@ -456,11 +439,6 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
     }
     execution.assertCurrent();
   };
-  if (params.abortSignal?.aborted) {
-    abortFromUpstream();
-  } else {
-    params.abortSignal?.addEventListener("abort", abortFromUpstream, { once: true });
-  }
   try {
     const startupBindingBeforeRotation = startupBinding;
     const startupBindingResolution = await rotateOversizedCodexAppServerStartupBinding({
@@ -567,7 +545,7 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
       runAbortController,
       terminalState,
       abortExplicitly,
-      abortFromUpstream,
+      cancellation,
       resolveReviewerPolicyContext,
       resolveRuntimeOptionsForCurrentBinding,
       mutable,
@@ -576,7 +554,7 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
     };
   } catch (error) {
     // The attempt owns this listener only after connection preparation returns.
-    params.abortSignal?.removeEventListener("abort", abortFromUpstream);
+    cancellation.dispose();
     releaseModelExecution();
     throw error;
   }

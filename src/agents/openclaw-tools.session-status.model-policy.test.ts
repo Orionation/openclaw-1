@@ -195,7 +195,7 @@ it("routes status model changes through the original operator policy and preserv
         );
       });
     } finally {
-      disposeSessionReadContexts();
+      await disposeSessionReadContexts();
     }
   });
 });

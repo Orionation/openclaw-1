@@ -68,9 +68,14 @@ it("rejects restricted native inference before invoking a harness without exact 
   }
 });
 
-it.each([false, true])(
-  "retains native model bindings after foreground closure (initial policy: %s)",
-  async (initialPolicy) => {
+it.each([
+  ["foreground", false],
+  ["foreground", true],
+  ["retained", false],
+  ["retained", true],
+] as const)(
+  "retains native model bindings across foreground closure (%s owner, initial policy: %s)",
+  async (owner, initialPolicy) => {
     const cfg = {
       agents: { defaults: { model: { primary: "fixture/a", fallbacks: ["fixture/b"] } } },
     };
@@ -118,18 +123,30 @@ it.each([false, true])(
     const bindings: Array<
       NonNullable<ReturnType<NonNullable<typeof host.capabilities.bindModelExecution>>>
     > = [];
+    const retained = owner === "retained" ? host.capabilities.retainSourceAuthority?.() : undefined;
+    const siblingSource =
+      owner === "retained" ? host.capabilities.retainSourceAuthority?.() : undefined;
     try {
-      const bind = host.capabilities.bindModelExecution;
-      if (!bind) {
+      const bindFromHost = host.capabilities.bindModelExecution;
+      const bind = owner === "retained" ? retained?.bindModelExecution : bindFromHost;
+      if (!bind || !bindFromHost) {
         throw new Error("missing host model execution capability");
+      }
+      if (owner === "retained") {
+        if (!siblingSource?.bindModelExecution) {
+          throw new Error("missing independently retained model execution capability");
+        }
+        expect(retained?.modelPolicyRequired).toBe(initialPolicy);
+        host.close();
+        admission.close();
       }
       if (initialPolicy) {
         expect(() => bind({ provider: "fixture", model: "denied" })).toThrow(
           "operator role cannot use this model",
         );
       }
-      const acquire = (model: string) => {
-        const binding = bind({ provider: "fixture", model });
+      const acquire = (model: string, bindModel = bind) => {
+        const binding = bindModel({ provider: "fixture", model });
         if (!binding) {
           throw new Error("missing operator model execution binding");
         }
@@ -140,15 +157,18 @@ it.each([false, true])(
       const b = acquire("b");
       const current = acquire("b");
       const outsideDefaults = initialPolicy ? undefined : acquire("denied");
+      const sibling = siblingSource?.bindModelExecution
+        ? acquire("b", siblingSource.bindModelExecution)
+        : undefined;
 
       host.close();
       admission.close();
-      expect(retainedSources).toBe(bindings.length);
+      expect(retainedSources).toBe(bindings.length + (retained ? 2 : 0));
       for (const binding of bindings) {
         expect(binding.signal.aborted).toBe(false);
         expect(binding.assertCurrent).not.toThrow();
       }
-      expect(() => bind({ provider: "fixture", model: "b" })).toThrow("no longer active");
+      expect(() => bindFromHost({ provider: "fixture", model: "b" })).toThrow("no longer active");
 
       policy = prepareOperatorModelPolicy({ cfg, policy: {}, manifestPlugins: [] });
       for (const listener of listeners) {
@@ -157,6 +177,9 @@ it.each([false, true])(
       if (outsideDefaults) {
         expect(outsideDefaults.signal.aborted).toBe(true);
         expect(outsideDefaults.assertCurrent).toThrow("operator role cannot use this model");
+      }
+      if (retained) {
+        expect(retained.modelPolicyRequired).toBe(true);
       }
       expect(a.assertCurrent).not.toThrow();
       expect(b.assertCurrent).not.toThrow();
@@ -175,6 +198,11 @@ it.each([false, true])(
       expect(b.assertCurrent).not.toThrow();
       expect(sourceAbort.signal.aborted).toBe(false);
       expect(source.assertCurrent).not.toThrow();
+      if (retained) {
+        expect(() => bind({ provider: "fixture", model: "a" })).toThrow(
+          "operator role cannot use this model",
+        );
+      }
 
       policy = undefined;
       for (const listener of listeners) {
@@ -189,17 +217,34 @@ it.each([false, true])(
       expect(b.assertCurrent).toThrow("no longer active");
       expect(current.assertCurrent).not.toThrow();
 
+      if (retained && sibling) {
+        expect(retained.modelPolicyRequired).toBe(false);
+        retained.release();
+        expect(current.signal.aborted).toBe(true);
+        expect(current.assertCurrent).toThrow("no longer active");
+        expect(() => retained.modelPolicyRequired).toThrow("no longer active");
+        expect(() => bind({ provider: "fixture", model: "b" })).toThrow("no longer active");
+        expect(sibling.signal.aborted).toBe(false);
+        expect(sibling.assertCurrent).not.toThrow();
+        expect(sourceAbort.signal.aborted).toBe(false);
+        current.release();
+      }
+      const active = sibling ?? current;
       sourceAbort.abort(new Error("operator source revoked"));
-      expect(current.signal.aborted).toBe(true);
-      expect(current.assertCurrent).toThrow("operator source revoked");
-      current.release();
-      expect(current.assertCurrent).toThrow("no longer active");
+      expect(active.signal.aborted).toBe(true);
+      expect(active.assertCurrent).toThrow("operator source revoked");
+      active.release();
+      expect(active.assertCurrent).toThrow("no longer active");
+      retained?.release();
+      siblingSource?.release();
       expect(listeners.size).toBe(0);
       expect(retainedSources).toBe(0);
     } finally {
       for (const binding of bindings) {
         binding.release();
       }
+      retained?.release();
+      siblingSource?.release();
       host.close();
       admission.close();
     }

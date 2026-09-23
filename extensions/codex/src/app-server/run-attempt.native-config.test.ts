@@ -6,14 +6,29 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
-import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
+import {
+  createAgentHarnessHostCapabilitiesForTest,
+  createMockPluginRegistry,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { createCodexAppServerAgentHarness } from "../../harness.js";
 import { resolveCodexAppServerHomeDir } from "./auth-start-options.js";
 import { CodexAppServerClient } from "./client.js";
 import { resolveCodexSupervisionAppServerRuntimeOptions } from "./config.js";
 import { setCodexTestToolFactory } from "./host-capability.test-support.js";
+import { ownCodexInferenceClient } from "./inference-routing.js";
 import { buildCodexRuntimeModelParams } from "./model-runtime.js";
+import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
+import {
+  createClient,
+  directSpawnItem,
+  createRuntime,
+  createTaskScope,
+  threadRead,
+  notifyChildStarted,
+  turnStartedNotification,
+  childTurnCompletedNotification,
+} from "./native-subagent-monitor.test-support.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
 import { isJsonObject } from "./protocol.js";
 import {
@@ -191,6 +206,8 @@ describe("Codex native configuration", () => {
           }
         },
       });
+      // The controlled stdio fixture represents the managed process returned by startup.
+      ownCodexInferenceClient(transport.client);
       vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(transport.client);
       const harness = createCodexAppServerAgentHarness({
         bindingStore: testCodexAppServerBindingStore,
@@ -637,3 +654,161 @@ describe("Codex native configuration", () => {
     },
   );
 });
+
+it.each(["restore", "fresh", "fresh after yield"] as const)(
+  "cancels accepted unqualified native work when a policy is introduced (%s)",
+  async (origin) => {
+    const fresh = origin !== "restore";
+    const yielded = origin !== "fresh";
+    const client = createClient();
+    const runtime = createRuntime();
+    type Source = NonNullable<
+      Parameters<typeof createAgentHarnessHostCapabilitiesForTest>[0]["operatorSource"]
+    >;
+    let policy: Source["modelPolicy"];
+    const listeners = new Set<() => void>();
+    const attempt = createParams(
+      path.join(tempDir, "unqualified-source.jsonl"),
+      path.join(tempDir, "unqualified-source-workspace"),
+    );
+    attempt.runId = "unqualified-child-source";
+    const host = await createAgentHarnessHostCapabilitiesForTest({
+      attempt,
+      pluginId: "codex",
+      operatorSource: {
+        profileId: "unqualified-native-operator",
+        scopes: ["operator.write"],
+        assertCurrent: () => {},
+        get modelPolicy() {
+          return policy;
+        },
+        onModelPolicyChanged: (changed) => {
+          listeners.add(changed);
+          return () => {
+            listeners.delete(changed);
+          };
+        },
+      },
+    });
+    const source = host.capabilities.retainSourceAuthority?.();
+    if (!source) {
+      throw new Error("Expected host-issued operator source");
+    }
+    const sibling = source.bindModelExecution?.({ provider: "test-provider", model: "allowed" });
+    if (!sibling) {
+      throw new Error("Expected sibling model binding");
+    }
+    const interruptModelExecution = vi.fn();
+    const cancelForeground = vi.fn();
+    const monitor = new codexNativeSubagentMonitorRuntime.Monitor(client.client, runtime, {
+      recoveryPollDelaysMs: [],
+      interruptModelExecution,
+    });
+    const parent = monitor.registerParent({
+      parentThreadId: "parent-thread",
+      modelSource: source,
+      requesterSessionKey: "agent:main:unqualified-native",
+      taskRuntimeScope: createTaskScope("agent:main:unqualified-native"),
+      configurationQualification: fresh
+        ? undefined
+        : { assertCurrent: () => {}, hasProvider: () => false },
+      unqualifiedModelExecution: fresh ? true : undefined,
+      onUnqualifiedModelCancelled: cancelForeground,
+    });
+    parent.bindTurn("parent-a");
+    const target = threadRead({ threadStatus: "notLoaded" });
+    target.thread.modelProvider = "unqualified-provider";
+    client.setThreadRead("child-thread", target);
+    await notifyChildStarted(client);
+    try {
+      if (fresh) {
+        await client.notify({
+          method: "item/completed",
+          params: {
+            threadId: "parent-thread",
+            turnId: "parent-a",
+            item: directSpawnItem("v2", "parent-thread", "child-thread"),
+          },
+        });
+      } else {
+        await monitor.prepareModelInput({
+          threadId: "parent-thread",
+          turnId: "parent-a",
+          itemId: "accepted-input",
+          target: "child-thread",
+          readQualification: () => undefined,
+          assertCurrent: () => {},
+        });
+        await client.notify({
+          method: "item/completed",
+          params: {
+            threadId: "parent-thread",
+            turnId: "parent-a",
+            item: {
+              type: "subAgentActivity",
+              kind: "interacted",
+              id: "accepted-input",
+              agentThreadId: "child-thread",
+              agentPath: "/root/child-thread",
+            },
+          },
+        });
+      }
+      await client.notify(turnStartedNotification("unqualified-turn"));
+      if (yielded) {
+        await parent.unregister();
+        host.close();
+      }
+      policy = {
+        models: [{ provider: "test-provider", model: "allowed" }],
+        allows: (model) => model.provider === "test-provider" && model.model === "allowed",
+      };
+      for (const changed of listeners) {
+        changed();
+      }
+      expect(interruptModelExecution).toHaveBeenCalledWith("child-thread", "unqualified-turn");
+      if (!yielded) {
+        expect(cancelForeground).toHaveBeenCalledOnce();
+        expect(interruptModelExecution).toHaveBeenCalledWith("parent-thread", "parent-a");
+        await expect(
+          monitor.captureModelSource({ threadId: "parent-thread", turnId: "parent-a" }),
+        ).rejects.toThrow("execution was cancelled");
+        await parent.unregister();
+        host.close();
+      } else {
+        expect(cancelForeground).not.toHaveBeenCalled();
+      }
+      expect(interruptModelExecution).toHaveBeenCalledTimes(yielded ? 1 : 2);
+      expect(sibling.signal.aborted).toBe(false);
+      expect(sibling.assertCurrent).not.toThrow();
+      const request = {
+        threadId: "child-thread",
+        turnId: "unqualified-turn",
+        parentThreadId: "parent-thread",
+        parentTurnId: "parent-a",
+      };
+      await expect(monitor.captureModelSource(request)).rejects.toThrow("execution was cancelled");
+      policy = undefined;
+      for (const changed of listeners) {
+        changed();
+      }
+      await expect(monitor.captureModelSource(request)).rejects.toThrow("execution was cancelled");
+      await client.notify(
+        childTurnCompletedNotification({
+          turnId: "unqualified-turn",
+          status: "completed",
+          items: [{ type: "agentMessage", id: "late-final", text: "Late success" }],
+        }),
+      );
+      expect(runtime.finalizeTaskRunByRunId).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "cancelled" }),
+      );
+    } finally {
+      sibling.release();
+      monitor.dispose();
+      await parent.unregister();
+      host.close();
+    }
+    expect(listeners.size).toBe(0);
+  },
+);

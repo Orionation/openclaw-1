@@ -3,6 +3,8 @@ import type { CodexAppServerLiveThreadOwnership } from "./client-runtime.js";
 import type { CodexAppServerClient } from "./client.js";
 import type { CodexAppServerRuntimeOptions } from "./config.js";
 import type { CodexInferenceProxy } from "./inference-proxy.js";
+import type { CodexInferenceProviderRoutes } from "./inference-routing.js";
+import type { CodexNativeModelInputTools } from "./native-model-input-tools.js";
 import type { CodexNativeSkillIsolation } from "./native-skill-isolation.js";
 import type { CodexPluginThreadConfig } from "./plugin-thread-config.js";
 import type { CodexDynamicToolSpec, CodexTurnEnvironmentParams, JsonObject } from "./protocol.js";
@@ -36,9 +38,10 @@ export type CodexAppServerThreadLifecycleBinding = CodexAppServerThreadBinding &
   clearInheritedServiceTier?: true;
 };
 
-type CodexThreadFinalConfigPatchDecision =
+export type CodexThreadFinalConfigPatchDecision = (
   | { action: "resume"; binding: CodexAppServerThreadBinding }
-  | { action: "start" };
+  | { action: "start" }
+) & { nativeModelInputTools?: CodexNativeModelInputTools };
 
 export type CodexThreadFinalConfigPatchResult = {
   configPatch?: JsonObject;
@@ -58,6 +61,7 @@ export type CodexPluginThreadConfigProvider = {
 
 export type CodexStartOrResumeThreadParams = {
   inferenceRoute?: CodexInferenceProxy;
+  inferenceProviderRoutes?: CodexInferenceProviderRoutes;
   client: CodexAppServerClient;
   abandonClient?: () => Promise<void>;
   reserveResumeThread?: (threadId: string) => { release: () => void };
@@ -104,6 +108,7 @@ export type CodexStartOrResumeThreadParams = {
 };
 
 export type CodexThreadRequestContext = {
+  nativeModelInputTools?: CodexNativeModelInputTools;
   bindingIdentity: CodexAppServerBindingIdentity;
   startModelSelection: ReturnType<typeof resolveCodexAppServerThreadModelSelection>;
   startModelProvider?: string;
@@ -132,6 +137,7 @@ export type CodexThreadRequestContext = {
 };
 
 export type CodexThreadResumePreparation = {
+  modelProvider?: string | null;
   assertConfigured: () => void;
   assertCurrent: () => void;
   dispose: () => void;

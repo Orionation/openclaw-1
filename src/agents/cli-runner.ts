@@ -258,6 +258,8 @@ async function runCliAgentInternal(
       await settleCliPreparationError(error, runParams);
       throw error;
     }
+    // Preparation resolves the session's execution owner for diagnostic attribution.
+    diagnosticLifecycle?.setExecutionOwner(context.params.agentId);
     const result = await settlePreparedCliRun({
       context,
       diagnosticLifecycle,
