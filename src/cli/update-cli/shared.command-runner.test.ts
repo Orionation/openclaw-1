@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { UpdateStepResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import {
@@ -251,24 +252,22 @@ describe("update CLI shared helpers", () => {
           return successfulCommandResult;
         });
 
-        await expect(
-          ensureGitCheckout({
-            dir: checkoutDir,
-            timeoutMs: 1_000,
-            env: process.env,
-            useStagedCheckout: async (stagingDir, publish, targetRoot, storageRoot) => {
-              const artifacts = path.join(storageRoot, ".artifacts");
-              await fs.mkdir(artifacts);
-              await fs.writeFile(path.join(artifacts, "build.marker"), "built\n");
-              expect(path.dirname(stagingDir)).toBe(storageRoot);
-              expect(await publish()).toBe(targetRoot);
-              expect((await fs.stat(artifacts)).dev).toBe((await fs.stat(targetRoot)).dev);
-              expect(await fs.readFile(path.join(artifacts, "build.marker"), "utf8")).toBe(
-                "built\n",
-              );
-            },
-          }),
-        ).resolves.toMatchObject({ checkoutDir, step: { exitCode: 0 } });
+        const result = await ensureGitCheckout({
+          dir: checkoutDir,
+          timeoutMs: 1_000,
+          env: process.env,
+          useStagedCheckout: async (stagingDir, publish, targetRoot, storageRoot) => {
+            const artifacts = path.join(storageRoot, ".artifacts");
+            await fs.mkdir(artifacts);
+            await fs.writeFile(path.join(artifacts, "build.marker"), "built\n");
+            expect(path.dirname(stagingDir)).toBe(storageRoot);
+            expect(await publish()).toBe(targetRoot);
+            expect((await fs.stat(artifacts)).dev).toBe((await fs.stat(targetRoot)).dev);
+            expect(await fs.readFile(path.join(artifacts, "build.marker"), "utf8")).toBe("built\n");
+          },
+        });
+        expect(result).toMatchObject({ checkoutDir, step: { exitCode: 0 } });
+        expect(result.step?.warnings).toBeUndefined();
 
         await expect(fs.readFile(path.join(checkoutDir, "checkout.marker"), "utf8")).resolves.toBe(
           "complete\n",
@@ -546,12 +545,22 @@ describe("update CLI shared helpers", () => {
     },
   );
 
-  it.each([false, true])(
-    "retains clone storage after repository custody is lost (published: %s)",
-    async (published) => {
+  it.each([
+    { published: false, missingStorage: false },
+    { published: true, missingStorage: false },
+    { published: true, missingStorage: true },
+  ])(
+    "reports skipped clone cleanup after custody loss (published: $published, missing storage: $missingStorage)",
+    async ({ published, missingStorage }) => {
       await withTestDir({ prefix: "openclaw-update-clone-custody-" }, async (base) => {
         const checkoutDir = path.join(base, "openclaw");
+        const onStepComplete = vi.fn((step: UpdateStepResult) => {
+          if (step.name === "git-clone-staging-cleanup") {
+            throw new Error("cleanup warning ledger unavailable");
+          }
+        });
         let retained = "";
+        let publicationError: unknown;
         runCommandWithTimeout.mockImplementationOnce(async (argv: string[]) => {
           await fs.writeFile(path.join(cloneTarget(argv), "checkout.marker"), "complete\n");
           return successfulCommandResult;
@@ -560,28 +569,66 @@ describe("update CLI shared helpers", () => {
           dir: checkoutDir,
           timeoutMs: 1_000,
           env: process.env,
+          progress: { onStepComplete },
           useStagedCheckout: async (stagingDir, publish, _targetRoot, storageRoot) => {
             retained = storageRoot;
             await fs.writeFile(path.join(storageRoot, "build.marker"), "keep\n");
             if (published) {
               await publish();
-              await fs.mkdir(stagingDir);
-              await fs.writeFile(path.join(stagingDir, "user.marker"), "keep\n");
+              if (missingStorage) {
+                await fs.rm(storageRoot, { recursive: true });
+              } else {
+                await fs.mkdir(stagingDir);
+                await fs.writeFile(path.join(stagingDir, "user.marker"), "keep\n");
+              }
             } else {
               await fs.rename(stagingDir, path.join(base, "displaced"));
-              await publish();
+              try {
+                await publish();
+              } catch (error) {
+                publicationError = error;
+                throw error;
+              }
             }
           },
         });
         if (published) {
-          await expect(result).resolves.toMatchObject({ checkoutDir, step: { exitCode: 0 } });
-          expect(await fs.readFile(path.join(retained, "repository", "user.marker"), "utf8")).toBe(
-            "keep\n",
+          await expect(result).resolves.toMatchObject({
+            checkoutDir,
+            step: {
+              exitCode: 0,
+              warnings: [expect.stringContaining("ownership could not be verified")],
+            },
+          });
+          expect(await fs.readFile(path.join(checkoutDir, "checkout.marker"), "utf8")).toBe(
+            "complete\n",
           );
+          if (!missingStorage) {
+            expect(
+              await fs.readFile(path.join(retained, "repository", "user.marker"), "utf8"),
+            ).toBe("keep\n");
+          }
         } else {
           await expect(result).rejects.toThrow("changed before publication");
+          await expect(result).rejects.toBe(publicationError);
         }
-        expect(await fs.readFile(path.join(retained, "build.marker"), "utf8")).toBe("keep\n");
+        if (missingStorage) {
+          await expect(fs.stat(retained)).rejects.toMatchObject({ code: "ENOENT" });
+        } else {
+          expect(await fs.readFile(path.join(retained, "build.marker"), "utf8")).toBe("keep\n");
+        }
+        const cleanupSteps = onStepComplete.mock.calls.filter(
+          ([step]) => step.name === "git-clone-staging-cleanup",
+        );
+        expect(cleanupSteps).toHaveLength(1);
+        expect(cleanupSteps[0]?.[0]).toMatchObject({
+          command: "",
+          advisory: {
+            kind: "recoverable-maintenance",
+            message: expect.stringContaining(retained),
+          },
+        });
+        expect(cleanupSteps[0]?.[0].advisory?.message).not.toMatch(/retained|rm -rf|Remove-Item/u);
       });
     },
   );
@@ -656,6 +703,9 @@ describe("update CLI shared helpers", () => {
           expect(await fs.readFile(path.join(retained, "build.marker"), "utf8")).toBe("keep\n");
           if (cleanupFailure === "inspect") {
             expect(cleanup).not.toHaveBeenCalledWith(retained, expect.anything());
+            expect(onStepComplete).toHaveBeenCalledWith(
+              expect.objectContaining({ command: "", stderrTail: "cleanup denied" }),
+            );
           }
           expect(onStepComplete).toHaveBeenCalledWith(
             expect.objectContaining({
