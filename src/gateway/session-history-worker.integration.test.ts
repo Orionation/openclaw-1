@@ -16,6 +16,7 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { readChatHistoryPage } from "./server-methods/chat-history-pages.js";
 import { readSessionHistorySnapshotAsync } from "./session-history-state.js";
 import { readChatHistoryMessageId } from "./session-history-tail.js";
+import { readSessionPreviewItemsFromTranscriptAsync } from "./session-transcript-preview.js";
 
 it.each([
   { agentId: "Other", sessionKey: "agent:other:fenced-history" },
@@ -107,6 +108,18 @@ it.each([
       await expect(runWithSessionTranscriptReadFence(invalidAdmission, readHttp)).rejects.toThrow(
         "different transcript store",
       );
+      for (const sessionKey of [input.sessionKey, "fenced-history"]) {
+        const readPreview = () =>
+          readSessionPreviewItemsFromTranscriptAsync({ ...target, ...input, sessionKey }, 10, 160);
+        expect(await runWithSessionTranscriptReadFence(admission, readPreview)).toEqual([
+          { role: "user", text: "Visible requested history" },
+          { role: "user", text: "Current turn" },
+          { role: "assistant", text: "After the admitted boundary" },
+        ]);
+        await expect(
+          runWithSessionTranscriptReadFence(invalidAdmission, readPreview),
+        ).rejects.toThrow("different transcript store");
+      }
     });
   },
 );
@@ -214,7 +227,7 @@ it("reads a new branch and reset interval after earlier worker pages settle", as
       const scope = { ...target, sessionEntry: entry };
       const limits = { cursor, maxBytes: 1_000_000, maxEvents: 200 };
       const golden = readTranscriptDisplayDelta(scope, limits);
-      const delta = await readSessionHistoryPageInWorker({
+      const { delta } = await readSessionHistoryPageInWorker({
         kind: "delta",
         params: { target: scope, limits },
       });

@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import * as updateCheck from "../../infra/update-check.js";
 import { createRetainedUpdateRecovery } from "../../infra/update-retained-recovery.test-support.js";
 import {
   createUpdateRun,
@@ -152,11 +153,14 @@ afterEach(() => {
 describe("successful update finalization ordering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // These roots are package fixtures; separate process tests cover Git discovery.
+    vi.spyOn(updateCheck, "resolveUpdateInstallKind").mockResolvedValue("package");
     mocks.readServiceState.mockReset();
     mocks.restartService.mockReset().mockResolvedValue("ok");
     mocks.stopService.mockReset();
     mocks.leaseActive = false;
     mocks.loadPluginRecords.mockResolvedValue({});
+    mocks.revalidateService.mockReset();
     mocks.revalidateService.mockImplementation(async ({ root, preManagedServiceStop }) => ({
       kind: "owned",
       root,
@@ -180,6 +184,24 @@ describe("successful update finalization ordering", () => {
 
   registerForegroundFinalizationTests({ tempDirs, mocks });
   registerServiceInstallationConvergenceTests(() => tempDirs.make("update-install-drift-"), mocks);
+
+  it("refuses same-schema finalization after requester revocation", async () => {
+    const env = { OPENCLAW_STATE_DIR: tempDirs.make("finalizer-revoked-requester-") };
+    const record = createUpdateRun({ trigger: "cli" }, { env });
+    await expect(
+      finishSuccessfulPackageSwitch({
+        run: {
+          runId: record.runId,
+          env,
+          executorFence: { assertCurrent() {} },
+          requesterAuthority: { requester: {}, isCurrent: () => false },
+        },
+      }),
+    ).rejects.toThrow("requester-revoked");
+    expect(mocks.updatePlugins).not.toHaveBeenCalled();
+    expect(mocks.restartService).not.toHaveBeenCalled();
+    expect(getUpdateRun(record.runId, { env })?.status).toBe("running");
+  });
 
   it("does not finalize or clean an active durable run without its live executor", async () => {
     const home = tempDirs.make("finalizer-pending-recovery-");
