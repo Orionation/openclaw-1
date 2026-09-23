@@ -38,6 +38,7 @@ import {
   resolveOpenAIReasoningEffortMapping,
 } from "openclaw/plugin-sdk/llm";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
+import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { createAgentsApiBindings } from "./agentsapi-bindings.js";
 import { AgentsApiClient } from "./agentsapi-client.js";
 import { collectOutputs, prepareInputs, uploadInputs } from "./agentsapi-files.js";
@@ -407,7 +408,7 @@ async function runAgentsApiSession(
             phase: "start",
             name: call.name,
             toolCallId: call.call_id,
-            args: sanitizeToolArgs(call.arguments),
+            args: asOptionalRecord(sanitizeToolArgs(call.arguments)),
           },
         });
         assertCurrent();
