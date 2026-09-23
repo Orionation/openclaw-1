@@ -1,0 +1,315 @@
+diff --git a/handler.d.ts b/handler.d.ts
+index 520571aa4f7339e1a992ebb378c74aa253173f56..1e0021eacae3bfbd9ad03ffa31d61b90f851ba62 100644
+--- a/handler.d.ts
++++ b/handler.d.ts
+@@ -49,12 +49,12 @@ export declare class NodeFsHandler {
+      * @param listener on fs change
+      * @returns closer for the watcher instance
+      */
+-    _watchWithNodeFs(path: string, listener: (path: string, newStats?: any) => void | Promise<void>): (() => void) | undefined;
++    _watchWithNodeFs(path: string, listener: (path: string, newStats?: any) => void | Promise<void>, closerPath?: string): (() => void) | undefined;
+     /**
+      * Watch a file and emit add event if warranted.
+      * @returns closer for the watcher instance
+      */
+-    _handleFile(file: Path, stats: Stats, initialAdd: boolean): (() => void) | undefined;
++    _handleFile(file: Path, stats: Stats, initialAdd: boolean, closerPath?: string): (() => void) | undefined;
+     /**
+      * Handle symlinks encountered while reading a dir.
+      * @param entry returned by readdirp
+@@ -76,7 +76,7 @@ export declare class NodeFsHandler {
+      * @param realpath
+      * @returns closer for the watcher instance.
+      */
+-    _handleDir(dir: string, stats: Stats, initialAdd: boolean, depth: number, target: string | undefined, wh: WatchHelper, realpath: string): Promise<(() => void) | undefined>;
++    _handleDir(dir: string, stats: Stats, initialAdd: boolean, depth: number, target: string | undefined, wh: WatchHelper, realpath: string, closerPath?: string): Promise<(() => void) | undefined>;
+     /**
+      * Handle added file, directory, or glob pattern.
+      * Delegates call to _handleFile / _handleDir after checks.
+diff --git a/handler.js b/handler.js
+index 6b12880bfcdae186dd738a9397b53ebb5849f0ac..80b8c97249401cdb6331867973190f12322c2436 100644
+--- a/handler.js
++++ b/handler.js
+@@ -103,6 +103,18 @@ const delFromSet = (main, prop, item) => {
+ };
+ const isEmptySet = (val) => (val instanceof Set ? val.size === 0 : !val);
+ const FsWatchInstances = new Map();
++// Namespace identity scopes native sharing without keeping an owner alive.
++const FsWatchNamespaces = new WeakMap();
++const fsWatchInstancesFor = (namespace) => {
++    if (namespace === undefined)
++        return FsWatchInstances;
++    let instances = FsWatchNamespaces.get(namespace);
++    if (!instances) {
++        instances = new Map();
++        FsWatchNamespaces.set(namespace, instances);
++    }
++    return instances;
++};
+ /**
+  * Instantiates the fs_watch interface
+  * @param path to be watched
+@@ -112,14 +124,14 @@ const FsWatchInstances = new Map();
+  * @param emitRaw emits raw event data
+  * @returns {NativeFsWatcher}
+  */
+-function createFsWatchInstance(path, options, listener, errHandler, emitRaw) {
++function createFsWatchInstance(path, options, listener, errHandler, emitRaw, emitChild) {
+     const handleEvent = (rawEvent, evPath) => {
+         listener(path);
+         emitRaw(rawEvent, evPath, { watchedPath: path });
+         // emit based on events occurring for files from a directory's watcher in
+         // case the file's watcher misses it (and rely on throttling to de-dupe)
+         if (evPath && path !== evPath) {
+-            fsWatchBroadcast(sp.resolve(path, evPath), KEY_LISTENERS, sp.join(path, evPath));
++            emitChild(sp.resolve(path, evPath), sp.join(path, evPath));
+         }
+     };
+     try {
+@@ -136,12 +148,13 @@ function createFsWatchInstance(path, options, listener, errHandler, emitRaw) {
+  * Helper for passing fs_watch event data to a collection of listeners
+  * @param fullPath absolute path bound to fs_watch instance
+  */
+-const fsWatchBroadcast = (fullPath, listenerType, val1, val2, val3) => {
+-    const cont = FsWatchInstances.get(fullPath);
++const fsWatchBroadcast = (instances, fullPath, listenerType, val1, val2, val3) => {
++    const cont = instances.get(fullPath);
+     if (!cont)
+         return;
+     foreach(cont[listenerType], (listener) => {
+-        listener(val1, val2, val3);
++        if (instances.get(fullPath) === cont)
++            listener(val1, val2, val3);
+     });
+ };
+ /**
+@@ -154,28 +167,51 @@ const fsWatchBroadcast = (fullPath, listenerType, val1, val2, val3) => {
+  */
+ const setFsWatchListener = (path, fullPath, options, handlers) => {
+     const { listener, errHandler, rawEmitter } = handlers;
+-    let cont = FsWatchInstances.get(fullPath);
++    const instances = fsWatchInstancesFor(options.nativeWatchNamespace);
+     let watcher;
+     if (!options.persistent) {
+-        watcher = createFsWatchInstance(path, options, listener, errHandler, rawEmitter);
++        let active = true;
++        watcher = createFsWatchInstance(path, options, listener, errHandler, rawEmitter,
++            (childPath, eventPath) => {
++                // A raw callback can close this dedicated handle before child forwarding.
++                if (active)
++                    fsWatchBroadcast(instances, childPath, KEY_LISTENERS, eventPath);
++            });
+         if (!watcher)
+             return;
+-        return watcher.close.bind(watcher);
++        return () => {
++            if (!active)
++                return;
++            active = false;
++            watcher.close();
++        };
+     }
++    let cont = instances.get(fullPath);
++    const isCurrent = () => cont !== undefined && instances.get(fullPath) === cont;
++    const broadcast = (type, ...args) => {
++        if (isCurrent())
++            fsWatchBroadcast(instances, fullPath, type, ...args);
++    };
+     if (cont) {
+         addAndConvert(cont, KEY_LISTENERS, listener);
+         addAndConvert(cont, KEY_ERR, errHandler);
+         addAndConvert(cont, KEY_RAW, rawEmitter);
+     }
+     else {
+-        watcher = createFsWatchInstance(path, options, fsWatchBroadcast.bind(null, fullPath, KEY_LISTENERS), errHandler, // no need to use broadcast here
+-        fsWatchBroadcast.bind(null, fullPath, KEY_RAW));
++        watcher = createFsWatchInstance(path, options, broadcast.bind(null, KEY_LISTENERS), errHandler,
++        broadcast.bind(null, KEY_RAW), (childPath, eventPath) => {
++            // Root callbacks can close this registration and create its replacement.
++            if (isCurrent())
++                fsWatchBroadcast(instances, childPath, KEY_LISTENERS, eventPath);
++        });
+         if (!watcher)
+             return;
+         watcher.on(EV.ERROR, async (error) => {
+-            const broadcastErr = fsWatchBroadcast.bind(null, fullPath, KEY_ERR);
+-            if (cont)
+-                cont.watcherUnusable = true; // documented since Node 10.4.1
++            // A retired container is frozen; queued errors must not mutate it.
++            if (!isCurrent())
++                return;
++            const broadcastErr = broadcast.bind(null, KEY_ERR);
++            cont.watcherUnusable = true; // documented since Node 10.4.1
+             // Workaround for https://github.com/joyent/node/issues/4337
+             if (isWindows && error.code === 'EPERM') {
+                 try {
+@@ -197,25 +233,26 @@ const setFsWatchListener = (path, fullPath, options, handlers) => {
+             rawEmitters: rawEmitter,
+             watcher,
+         };
+-        FsWatchInstances.set(fullPath, cont);
++        instances.set(fullPath, cont);
+     }
+     // const index = cont.listeners.indexOf(listener);
+     // removes this instance's listeners and closes the underlying fs_watch
+     // instance if there are no more listeners left
+     return () => {
++        if (!isCurrent())
++            return;
+         delFromSet(cont, KEY_LISTENERS, listener);
+         delFromSet(cont, KEY_ERR, errHandler);
+         delFromSet(cont, KEY_RAW, rawEmitter);
+         if (isEmptySet(cont.listeners)) {
+-            // Check to protect against issue gh-730.
+-            // if (cont.watcherUnusable) {
+-            cont.watcher.close();
+-            // }
+-            FsWatchInstances.delete(fullPath);
++            // Retire before native close, so reentrant callbacks cannot hit a replacement.
++            instances.delete(fullPath);
++            const watcher = cont.watcher;
+             HANDLER_KEYS.forEach(clearItem(cont));
+             // @ts-ignore
+             cont.watcher = undefined;
+             Object.freeze(cont);
++            watcher.close();
+         }
+     };
+ };
+@@ -275,7 +312,12 @@ const setFsWatchFileListener = (path, fullPath, options, handlers) => {
+     // const index = cont.listeners.indexOf(listener);
+     // Removes this instance's listeners and closes the underlying fs_watchFile
+     // instance if there are no more listeners left.
++    // The returned disposer can run before its owner's enrolled close.
++    let active = true;
+     return () => {
++        if (!active)
++            return;
++        active = false;
+         delFromSet(cont, KEY_LISTENERS, listener);
+         delFromSet(cont, KEY_RAW, rawEmitter);
+         if (isEmptySet(cont.listeners)) {
+@@ -302,7 +344,9 @@ export class NodeFsHandler {
+      * @param listener on fs change
+      * @returns closer for the watcher instance
+      */
+-    _watchWithNodeFs(path, listener) {
++    _watchWithNodeFs(path, listener, closerPath = path) {
++        if (this.fsw.closed)
++            return;
+         const opts = this.fsw.options;
+         const directory = sp.dirname(path);
+         const basename = sp.basename(path);
+@@ -324,19 +368,23 @@ export class NodeFsHandler {
+             });
+         }
+         else {
++            options.nativeWatchNamespace = opts.nativeWatchNamespace;
+             closer = setFsWatchListener(path, absolutePath, options, {
+                 listener,
+                 errHandler: this._boundHandleError,
+                 rawEmitter: this.fsw._emitRaw,
+             });
+         }
++        // Enroll before async directory returns or synchronous ADD callbacks can close.
++        if (closer)
++            this.fsw._addPathCloser(closerPath, closer);
+         return closer;
+     }
+     /**
+      * Watch a file and emit add event if warranted.
+      * @returns closer for the watcher instance
+      */
+-    _handleFile(file, stats, initialAdd) {
++    _handleFile(file, stats, initialAdd, closerPath = file) {
+         if (this.fsw.closed) {
+             return;
+         }
+@@ -365,9 +413,7 @@ export class NodeFsHandler {
+                     if ((isMacos || isLinux || isFreeBSD) && prevStats.ino !== newStats.ino) {
+                         this.fsw._closeFile(path);
+                         prevStats = newStats;
+-                        const closer = this._watchWithNodeFs(file, listener);
+-                        if (closer)
+-                            this.fsw._addPathCloser(path, closer);
++                        this._watchWithNodeFs(file, listener, path);
+                     }
+                     else {
+                         prevStats = newStats;
+@@ -390,7 +436,7 @@ export class NodeFsHandler {
+             }
+         };
+         // kick off the watcher
+-        const closer = this._watchWithNodeFs(file, listener);
++        const closer = this._watchWithNodeFs(file, listener, closerPath);
+         // emit an add event if we're supposed to
+         if (!(initialAdd && this.fsw.options.ignoreInitial) && this.fsw._isntIgnored(file)) {
+             if (!this.fsw._throttle(EV.ADD, file, 0))
+@@ -528,7 +574,7 @@ export class NodeFsHandler {
+      * @param realpath
+      * @returns closer for the watcher instance.
+      */
+-    async _handleDir(dir, stats, initialAdd, depth, target, wh, realpath) {
++    async _handleDir(dir, stats, initialAdd, depth, target, wh, realpath, closerPath = dir) {
+         const parentDir = this.fsw._getWatchedDir(sp.dirname(dir));
+         const tracked = parentDir.has(sp.basename(dir));
+         if (!(initialAdd && this.fsw.options.ignoreInitial) && !target && !tracked) {
+@@ -551,7 +597,7 @@ export class NodeFsHandler {
+                 if (stats && stats.mtimeMs === 0)
+                     return;
+                 this._handleRead(dirPath, false, wh, target, dir, depth, throttler);
+-            });
++            }, closerPath);
+         }
+         return closer;
+     }
+@@ -585,13 +631,12 @@ export class NodeFsHandler {
+                 return false;
+             }
+             const follow = this.fsw.options.followSymlinks;
+-            let closer;
+             if (stats.isDirectory()) {
+                 const absPath = sp.resolve(path);
+                 const targetPath = follow ? await fsrealpath(path) : path;
+                 if (this.fsw.closed)
+                     return;
+-                closer = await this._handleDir(wh.watchPath, stats, initialAdd, depth, target, wh, targetPath);
++                await this._handleDir(wh.watchPath, stats, initialAdd, depth, target, wh, targetPath, path);
+                 if (this.fsw.closed)
+                     return;
+                 // preserve this symlink's target path
+@@ -606,7 +651,7 @@ export class NodeFsHandler {
+                 const parent = sp.dirname(wh.watchPath);
+                 this.fsw._getWatchedDir(parent).add(wh.watchPath);
+                 this.fsw._emit(EV.ADD, wh.watchPath, stats);
+-                closer = await this._handleDir(parent, stats, initialAdd, depth, path, wh, targetPath);
++                await this._handleDir(parent, stats, initialAdd, depth, path, wh, targetPath, path);
+                 if (this.fsw.closed)
+                     return;
+                 // preserve this symlink's target path
+@@ -615,11 +660,9 @@ export class NodeFsHandler {
+                 }
+             }
+             else {
+-                closer = this._handleFile(wh.watchPath, stats, initialAdd);
++                this._handleFile(wh.watchPath, stats, initialAdd, path);
+             }
+             ready();
+-            if (closer)
+-                this.fsw._addPathCloser(path, closer);
+             return false;
+         }
+         catch (error) {
+diff --git a/index.d.ts b/index.d.ts
+index edfe0df7f923be4daab9e526aa6d46faef7fe578..56bc5d03c62e7ff46c9144e2ac4b46daa1f7adb2 100644
+--- a/index.d.ts
++++ b/index.d.ts
+@@ -9,6 +9,8 @@ export type AWF = {
+ };
+ type BasicOpts = {
+     persistent: boolean;
++    /** Scope native event forwarding and persistent handle sharing to this object identity. */
++    nativeWatchNamespace?: object;
+     ignoreInitial: boolean;
+     followSymlinks: boolean;
+     cwd?: string;

@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import * as tar from "tar";
 import { afterEach, describe, expect, it } from "vitest";
 import { pnpmLockfileDocuments } from "../scripts/lib/pnpm-lockfile-documents.mjs";
+import { resolveNpmRunner } from "../scripts/npm-runner.mts";
 import { restorePrepackArtifacts } from "../scripts/openclaw-postpack.mjs";
 import {
   collectPreparedPrepackErrors,
@@ -28,6 +29,10 @@ import {
   resolvePrepackCommandTimeoutMs,
   runPrepackCommand,
 } from "../scripts/openclaw-prepack.ts";
+import {
+  preparePackageChokidarBundle,
+  restorePackageChokidarBundle,
+} from "../scripts/package-chokidar-bundle.mjs";
 import { preparePackageDocsMap } from "../scripts/package-docs-map.mjs";
 import {
   resolveRuntimeWorkerArgv,
@@ -191,6 +196,8 @@ function createPrepackLifecycleFixture() {
     path.join(rootDir, "pnpm-lock.yaml"),
     `---\n${rootPnpmEnvironment}\n---\nlockfileVersion: '9.0'\nimporters: {}\n`,
   );
+  // Match the source workspace: lifecycle scripts must not reconcile this prepared install.
+  writeFileSync(path.join(rootDir, "pnpm-workspace.yaml"), "verifyDepsBeforeRun: false\n");
   writeFileSync(path.join(rootDir, "CHANGELOG.md"), sourceFiles["CHANGELOG.md"]);
   writeFileSync(path.join(rootDir, "docs/docs_map.md"), "Source docs-map stub.\n");
   writeFileSync(
@@ -229,7 +236,7 @@ process.exit(result.status ?? 1);
     };
   const packDir = path.join(rootDir, "pack");
   mkdirSync(packDir);
-  const pack = (prepared: boolean) => {
+  const pack = (prepared: boolean, tool: "npm" | "pnpm" = "pnpm") => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
@@ -238,10 +245,14 @@ process.exit(result.status ?? 1);
     if (prepared) {
       env.OPENCLAW_PREPACK_PREPARED = "1";
     }
-    return spawnSync("pnpm", ["pack", "--silent", "--pack-destination", packDir], {
+    const args = ["pack", "--silent", "--pack-destination", packDir];
+    const runner = tool === "npm" ? resolveNpmRunner({ npmArgs: args, env }) : undefined;
+    return spawnSync(runner?.command ?? "pnpm", runner?.args ?? args, {
       cwd: rootDir,
       encoding: "utf8",
-      env,
+      env: runner?.env ?? env,
+      shell: runner?.shell,
+      windowsVerbatimArguments: runner?.windowsVerbatimArguments,
       timeout: 30_000,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -258,11 +269,24 @@ process.exit(result.status ?? 1);
       ".artifacts/package-docs-map/receipt.json",
       ".artifacts/package-manifest/package.json.prepack-backup",
       ".artifacts/package-changelog/CHANGELOG.md.prepack-backup",
+      ".artifacts/package-chokidar-bundle",
     ]) {
       expect(existsSync(path.join(rootDir, name)), name).toBe(false);
     }
   };
   return { rootDir, sourceFiles, packDir, pack, readLifecycleResult, expectRestored };
+}
+
+function addChokidarBundle(fixture: ReturnType<typeof createPrepackLifecycleFixture>) {
+  const sourcePackage = JSON.parse(fixture.sourceFiles["package.json"]);
+  sourcePackage.dependencies = { chokidar: "5.0.0" };
+  sourcePackage.bundleDependencies = ["chokidar"];
+  fixture.sourceFiles["package.json"] = `${JSON.stringify(sourcePackage, null, 2)}\n`;
+  writeFileSync(path.join(fixture.rootDir, "package.json"), fixture.sourceFiles["package.json"]);
+  const source = path.dirname(fileURLToPath(import.meta.resolve("chokidar")));
+  const target = path.join(fixture.rootDir, "node_modules/chokidar");
+  symlinkSync(source, target, "junction");
+  return { source, target, originalLink: readlinkSync(target) };
 }
 
 type BundledChannelSmokeLayout = "source" | "installed-env" | "installed-path";
@@ -462,6 +486,55 @@ describe("prepared prepack ownership", () => {
 });
 
 describe("prepack lifecycle", () => {
+  it("materializes Chokidar through npm hooks and restores its isolated source link", () => {
+    const fixture = createPrepackLifecycleFixture();
+    const { source, target, originalLink } = addChokidarBundle(fixture);
+    const result = fixture.pack(true, "npm");
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(path.join(fixture.rootDir, "compat-check-invoked"))).toBe(true);
+    expect(fixture.readLifecycleResult("prepack")).toMatchObject({ status: 0, signal: null });
+    expect(fixture.readLifecycleResult("postpack")).toMatchObject({ status: 0, signal: null });
+    const extractDir = path.join(fixture.rootDir, "extract");
+    mkdirSync(extractDir);
+    const tarballs = readdirSync(fixture.packDir).filter((name) => name.endsWith(".tgz"));
+    expect(tarballs).toHaveLength(1);
+    tar.x({ cwd: extractDir, file: path.join(fixture.packDir, tarballs[0]!), sync: true });
+    const packed = path.join(extractDir, "package/node_modules/chokidar");
+    expect(readFileSync(path.join(packed, "handler.js"))).toEqual(
+      readFileSync(path.join(source, "handler.js")),
+    );
+    expect(
+      JSON.parse(readFileSync(path.join(packed, "node_modules/readdirp/package.json"), "utf8")),
+    ).toMatchObject({ name: "readdirp", version: "5.1.1" });
+    expect(readlinkSync(target)).toBe(originalLink);
+    fixture.expectRestored();
+  });
+
+  it("does not roll back an incumbent Chokidar stage after inner acquisition fails", async () => {
+    const fixture = createPrepackLifecycleFixture();
+    const { target, originalLink } = addChokidarBundle(fixture);
+    await preparePackageChokidarBundle(fixture.rootDir);
+    const stage = path.join(fixture.rootDir, ".artifacts/package-chokidar-bundle");
+    const receipt = readFileSync(path.join(stage, "receipt.json"), "utf8");
+    const stagedRuntime = readFileSync(path.join(target, "handler.js"));
+    try {
+      const result = fixture.pack(true, "npm");
+      expect(result.status).not.toBe(0);
+      expect(existsSync(path.join(fixture.rootDir, "compat-check-invoked"))).toBe(true);
+      expect(fixture.readLifecycleResult("prepack").stderr).toContain("staging is already active");
+      expect(readFileSync(path.join(stage, "receipt.json"), "utf8")).toBe(receipt);
+      expect(readlinkSync(path.join(stage, "original"))).toBe(originalLink);
+      expect(readFileSync(path.join(target, "handler.js"))).toEqual(stagedRuntime);
+      expect(
+        existsSync(path.join(fixture.rootDir, ".artifacts/package-docs-map/receipt.json")),
+      ).toBe(false);
+    } finally {
+      await restorePackageChokidarBundle(fixture.rootDir);
+    }
+    expect(readlinkSync(target)).toBe(originalLink);
+    fixture.expectRestored();
+  });
+
   it.each([true, false])("packs and restores source artifacts with prepared=%s", (prepared) => {
     const fixture = createPrepackLifecycleFixture();
     const result = fixture.pack(prepared);

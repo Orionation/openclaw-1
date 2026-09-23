@@ -12,6 +12,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DOCKER_SELECTED_PLUGIN_BUILD_IDS_ENV } from "../../../../scripts/lib/bundled-plugin-build-entries.mjs";
 import { PACKAGE_DIST_CONTENT_INVENTORY_RELATIVE_PATH } from "../../../../scripts/lib/package-dist-inventory-contract.mts";
 import { writePackageDistInventoryForPublish } from "../../../../scripts/lib/package-dist-inventory.ts";
+import { restorePrepackArtifacts } from "../../../../scripts/openclaw-postpack.mjs";
+import {
+  preparePackageChokidarBundle,
+  restorePackageChokidarBundle,
+} from "../../../../scripts/package-chokidar-bundle.mjs";
 import {
   preparePackageDocsMap,
   restorePackageDocsMap,
@@ -113,6 +118,25 @@ function createSelectedPluginPackageFixture() {
     fs.writeFileSync(target, contents);
   }
   return { sourceDir, outputDir, files, pluginPackage };
+}
+
+function createChokidarPackageFixture() {
+  const fixture = createSelectedPluginPackageFixture();
+  const { sourceDir } = fixture;
+  const manifestPath = path.join(sourceDir, "package.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.dependencies.chokidar = "5.0.0";
+  manifest.bundleDependencies = ["chokidar"];
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  fs.mkdirSync(path.join(sourceDir, "docs"));
+  fs.writeFileSync(path.join(sourceDir, "docs/page.md"), "# Package docs\n");
+  fs.copyFileSync(
+    path.resolve("scripts/package-chokidar-bundle.mjs"),
+    path.join(sourceDir, "scripts/package-chokidar-bundle.mjs"),
+  );
+  const target = path.join(sourceDir, "node_modules/chokidar");
+  fs.symlinkSync(path.dirname(fileURLToPath(import.meta.resolve("chokidar"))), target, "junction");
+  return { ...fixture, target, originalLink: fs.readlinkSync(target) };
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -1956,6 +1980,82 @@ describe("package-openclaw-for-docker", () => {
       "cleanup",
       `restore-changelog:${sourceDir}`,
     ]);
+  });
+
+  it.each([false, true])(
+    "restores the source-owned Chokidar slot after pack failure with sibling cleanup failure=%s",
+    async (cleanupFails) => {
+      const { sourceDir, outputDir, target, originalLink } = createChokidarPackageFixture();
+      const docsReceipt = path.join(sourceDir, ".artifacts/package-docs-map/receipt.json");
+      const bundleStage = path.join(sourceDir, ".artifacts/package-chokidar-bundle");
+      const packError = new Error("pack failed with a staged native watcher bundle");
+      const cleanupError = new Error("sibling bundle cleanup failed");
+      const restoreDocs = vi.fn(async (cwd: string) => {
+        expect(fs.readlinkSync(target)).toBe(originalLink);
+        expect(fs.existsSync(bundleStage)).toBe(false);
+        await restorePackageDocsMap(cwd);
+      });
+      const packed = packOpenClawPackageForDocker(sourceDir, outputDir, {
+        prepareDocsMap: preparePackageDocsMap,
+        restoreDocsMap: restoreDocs,
+        prepareChangelog: async () => {},
+        restoreChangelog: async () => {},
+        prepareBundledAiRuntime: async () => async () => {
+          if (cleanupFails) throw cleanupError;
+        },
+        runCaptureImpl: async () => {
+          expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
+          expect(fs.existsSync(path.join(target, "node_modules/readdirp/package.json"))).toBe(true);
+          expect(fs.existsSync(docsReceipt)).toBe(true);
+          throw packError;
+        },
+      });
+      if (cleanupFails) {
+        await expect(packed).rejects.toMatchObject({
+          cause: packError,
+          errors: [packError, cleanupError],
+        });
+      } else {
+        await expect(packed).rejects.toBe(packError);
+      }
+      expect(fs.readlinkSync(target)).toBe(originalLink);
+      expect(fs.existsSync(bundleStage)).toBe(false);
+      expect(restoreDocs).toHaveBeenCalledTimes(cleanupFails ? 0 : 1);
+      expect(fs.existsSync(docsReceipt)).toBe(cleanupFails);
+      // The existing explicit recovery command owns the retained outer receipt.
+      await restorePrepackArtifacts(sourceDir);
+      expect(fs.existsSync(docsReceipt)).toBe(false);
+    },
+  );
+
+  it("preserves an incumbent Chokidar stage when ignore-scripts preparation is rejected", async () => {
+    const { sourceDir, outputDir, target, originalLink } = createChokidarPackageFixture();
+    await preparePackageChokidarBundle(sourceDir);
+    const stage = path.join(sourceDir, ".artifacts/package-chokidar-bundle");
+    const receipt = fs.readFileSync(path.join(stage, "receipt.json"), "utf8");
+    const stagedRuntime = fs.readFileSync(path.join(target, "handler.js"));
+    const runCapture = vi.fn();
+    try {
+      await expect(
+        packOpenClawPackageForDocker(sourceDir, outputDir, {
+          prepareDocsMap: preparePackageDocsMap,
+          restoreDocsMap: restorePackageDocsMap,
+          prepareChangelog: async () => {},
+          restoreChangelog: async () => {},
+          runCaptureImpl: runCapture,
+        }),
+      ).rejects.toMatchObject({ code: "PACKAGE_CHOKIDAR_BUNDLE_ACTIVE" });
+      expect(runCapture).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path.join(stage, "receipt.json"), "utf8")).toBe(receipt);
+      expect(fs.readlinkSync(path.join(stage, "original"))).toBe(originalLink);
+      expect(fs.readFileSync(path.join(target, "handler.js"))).toEqual(stagedRuntime);
+      expect(fs.existsSync(path.join(sourceDir, ".artifacts/package-docs-map/receipt.json"))).toBe(
+        false,
+      );
+    } finally {
+      await restorePackageChokidarBundle(sourceDir);
+    }
+    expect(fs.readlinkSync(target)).toBe(originalLink);
   });
 
   it("clamps oversized command timers before scheduling", async () => {

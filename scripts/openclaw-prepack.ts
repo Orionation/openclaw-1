@@ -11,6 +11,7 @@ import { readPositiveEnvInt } from "./lib/numeric-options.mjs";
 import { writePackageDistInventoryForPublish } from "./lib/package-dist-inventory.ts";
 import { restorePrepackArtifacts } from "./openclaw-postpack.mjs";
 import { preparePackageChangelog } from "./package-changelog.mjs";
+import { preparePackageChokidarBundle } from "./package-chokidar-bundle.mjs";
 import { preparePackageDocsMap } from "./package-docs-map.mjs";
 import { preparePackageManifest } from "./package-manifest.mjs";
 import { createPnpmRunnerSpawnSpec } from "./pnpm-runner.mts";
@@ -280,15 +281,23 @@ export async function preparePrepackArtifacts(env: NodeJS.ProcessEnv = process.e
   // The docs-map receipt serializes source-mutating pack lifecycles before the
   // changelog is touched, so concurrent packs cannot restore each other's files.
   await preparePackageDocsMap(process.cwd());
+  let chokidarStageAcquired = false;
   try {
     await writeDistInventory();
     await preparePackageManifest(process.cwd());
     await preparePackageChangelog(process.cwd(), {
       allowUnreleased: resolvePrepackAllowUnreleasedChangelog(env),
     });
+    await preparePackageChokidarBundle(process.cwd(), () => {
+      chokidarStageAcquired = true;
+    });
   } catch (error) {
     try {
-      await restorePrepackArtifacts(process.cwd());
+      // A rejected inner acquisition must not restore a standalone staging owner.
+      // Partial preparation still owns its rollback and must retain the outer lock on failure.
+      await restorePrepackArtifacts(process.cwd(), {
+        skipChokidarBundle: !chokidarStageAcquired,
+      });
     } catch (restoreError) {
       throw prepackPreparationRestoreError(error, restoreError);
     }

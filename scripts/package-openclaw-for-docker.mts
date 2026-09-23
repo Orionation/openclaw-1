@@ -76,6 +76,10 @@ type PackageManifestLifecycle = {
   preparePackageManifest: (cwd: string) => Promise<unknown>;
   restorePackageManifest: (cwd: string) => Promise<unknown>;
 };
+type ChokidarBundleLifecycle = {
+  preparePackageChokidarBundle: (cwd: string, onStageAcquired?: () => void) => Promise<unknown>;
+  restorePackageChokidarBundle: (cwd: string) => Promise<unknown>;
+};
 type PackageOptions = RunOptions & {
   bundlePlugins?: string[];
   allowUnreleasedChangelog?: unknown;
@@ -109,6 +113,14 @@ function isPackageManifestLifecycle(value: unknown): value is PackageManifestLif
     isRecord(value) &&
     typeof value.preparePackageManifest === "function" &&
     typeof value.restorePackageManifest === "function"
+  );
+}
+
+function isChokidarBundleLifecycle(value: unknown): value is ChokidarBundleLifecycle {
+  return (
+    isRecord(value) &&
+    typeof value.preparePackageChokidarBundle === "function" &&
+    typeof value.restorePackageChokidarBundle === "function"
   );
 }
 
@@ -810,7 +822,10 @@ async function restorePackageSourceArtifacts(
   restoreDocsMap: (cwd: string) => Promise<unknown>,
   restoreManifest: (cwd: string) => Promise<unknown>,
   restoreChangelog: (cwd: string) => Promise<unknown>,
+  restoreChokidarBundle: (cwd: string) => Promise<unknown>,
+  releaseReceipt = true,
 ) {
+  await restoreChokidarBundle(sourceDir);
   await restoreChangelog(sourceDir);
   await restoreManifest(sourceDir);
   await Promise.all(
@@ -819,7 +834,9 @@ async function restorePackageSourceArtifacts(
     ),
   );
   // Release the lifecycle receipt only after every other source mutation settles.
-  await restoreDocsMap(sourceDir);
+  if (releaseReceipt) {
+    await restoreDocsMap(sourceDir);
+  }
 }
 
 async function loadSourcePackageLifecycle(
@@ -897,6 +914,15 @@ export async function packOpenClawPackageForDocker(
     (async () => false);
   const prepareBundledAiRuntime =
     packageOptions.prepareBundledAiRuntime ?? prepareBundledAiRuntimePackage;
+  const sourceChokidarLifecycle = (await loadSourcePackageLifecycle(
+    sourcePath,
+    "package-chokidar-bundle.mjs",
+    isChokidarBundleLifecycle,
+  )) as ChokidarBundleLifecycle | null;
+  const prepareChokidarBundle =
+    sourceChokidarLifecycle?.preparePackageChokidarBundle ?? (async () => false);
+  const restoreChokidarBundle =
+    sourceChokidarLifecycle?.restorePackageChokidarBundle ?? (async () => false);
   const packTool = packageOptions.pnpmPack ? "pnpm" : "npm";
   if (packageOptions.packJsonPath && packageOptions.pnpmPack) {
     throw new Error("packJsonPath cannot be combined with pnpmPack");
@@ -912,12 +938,16 @@ export async function packOpenClawPackageForDocker(
       throw new ForwardedSignalExitError(forwardedSignalExitCode);
     }
   };
+  let chokidarStageAcquired = false;
   try {
     console.error("==> Writing OpenClaw package inventory");
     await writePackageInventoryForDocker(sourcePath, packageOptions.runImpl ?? run);
 
     await prepareManifest(sourcePath);
     await prepareChangelog(sourcePath);
+    await prepareChokidarBundle(sourcePath, () => {
+      chokidarStageAcquired = true;
+    });
   } catch (error) {
     try {
       await restorePackageSourceArtifacts(
@@ -925,6 +955,7 @@ export async function packOpenClawPackageForDocker(
         restoreDocsMap,
         restoreManifest,
         restoreChangelog,
+        chokidarStageAcquired ? restoreChokidarBundle : async () => false,
       );
     } catch (restoreError) {
       releaseSignalExit();
@@ -939,6 +970,7 @@ export async function packOpenClawPackageForDocker(
   try {
     let cleanupBundledAiRuntime = async () => {};
     let cleanupBundledPlugins = async () => {};
+    const operationErrors: unknown[] = [];
     try {
       await cleanPackedOpenClawTarballs(outputPath);
       if (packageOptions.bundlePlugins?.length) {
@@ -975,21 +1007,39 @@ export async function packOpenClawPackageForDocker(
           DEFAULT_PACKAGE_PACK_TIMEOUT_MS,
         ),
       });
-    } finally {
+    } catch (error) {
+      operationErrors.push(error);
+    }
+    let cleanupFailed = false;
+    for (const cleanup of [
+      cleanupBundledAiRuntime,
+      cleanupBundledPlugins,
+      () =>
+        restorePackageSourceArtifacts(
+          sourcePath,
+          restoreDocsMap,
+          restoreManifest,
+          restoreChangelog,
+          restoreChokidarBundle,
+          !cleanupFailed,
+        ),
+    ]) {
       try {
-        await cleanupBundledAiRuntime();
-      } finally {
-        try {
-          await cleanupBundledPlugins();
-        } finally {
-          await restorePackageSourceArtifacts(
-            sourcePath,
-            restoreDocsMap,
-            restoreManifest,
-            restoreChangelog,
-          );
-        }
+        await cleanup();
+      } catch (error) {
+        // Restore every owned dependency slot without losing the pack failure.
+        // A failed sibling restore must keep the outer lifecycle receipt held.
+        cleanupFailed = true;
+        operationErrors.push(error);
       }
+    }
+    if (operationErrors.length === 1) {
+      throw operationErrors[0];
+    }
+    if (operationErrors.length > 1) {
+      throw new AggregateError(operationErrors, "Package operation and cleanup both failed.", {
+        cause: operationErrors[0],
+      });
     }
     // Scan the emptied pnpm destination instead of trusting its absolute-path output.
     let tarball = await newestOpenClawTarball(

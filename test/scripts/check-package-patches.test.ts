@@ -34,6 +34,7 @@ afterEach(() => {
 describe("check-package-patches", () => {
   it("allows approved pnpm patches together", () => {
     const approvedPatches = [
+      ["chokidar@5.0.0", "patches/chokidar@5.0.0.patch"],
       ["@awesome.me/webawesome@3.12.0", "patches/@awesome.me__webawesome@3.12.0.patch"],
       ["baileys@7.0.0-rc12", "patches/baileys@7.0.0-rc12.patch"],
       ["baileys@7.0.0-rc13", "patches/baileys@7.0.0-rc13.patch"],
@@ -68,6 +69,8 @@ ${approvedPatches.map(([specifier]) => `  "${specifier}": a9aea1790d2c65b1ae543c
   });
 
   it.each([
+    ["chokidar@5.0.1", "patches/chokidar@5.0.1.patch"],
+    ["chokidar@5.0.0", "patches/chokidar@5.0.0-other.patch"],
     ["left-pad@1.3.0", "patches/left-pad@1.3.0.patch"],
     ["matrix-js-sdk@42.3.1", "patches/matrix-js-sdk@42.3.1.patch"],
     ["matrix-js-sdk@42.3.0", "patches/matrix-js-sdk@42.3.0-other.patch"],

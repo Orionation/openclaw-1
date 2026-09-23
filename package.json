@@ -2238,6 +2238,7 @@
     "verify": "node --import ./scripts/tsx.mjs scripts/verify.mts"
   },
   "bundleDependencies": [
+    "chokidar",
     "chrome-devtools-mcp"
   ],
   "dependencies": {

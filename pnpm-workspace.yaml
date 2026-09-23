@@ -143,3 +143,4 @@ patchedDependencies:
   "matrix-js-sdk@42.3.0": patches/matrix-js-sdk@42.3.0.patch
   "@novnc/novnc@1.7.0": patches/@novnc__novnc@1.7.0.patch
   vitest@5.0.0: patches/vitest@5.0.0.patch
+  chokidar@5.0.0: patches/chokidar@5.0.0.patch

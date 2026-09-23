@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { coerceErrorMessage } from "./error-format.mts";
 import {
   collectPatchedMcpArtifactErrors,
@@ -19,6 +19,15 @@ type BundledPackage = {
   packageRoot: string;
   readText: (relativePath: string) => string;
 };
+const PATCHED_CHOKIDAR_VERSION = "5.0.0";
+// npm does not apply pnpm patches. The package must carry these same runtime/types.
+const PATCHED_CHOKIDAR_HASHES = new Map([
+  ["LICENSE", "bdfd5e0edb6089e6586c8f15e6a86fab83ffbeeda3b3b7b33734ccb8c5906965"],
+  ["index.js", "4d1669ff207e874eb6185b8a4f04c1e694120b9eaf6723ddea1be7ce5583b164"],
+  ["handler.js", "d1d80133c592fcd65bfb1dc388f82d24686183614f09317f7e1638166be03a44"],
+  ["index.d.ts", "105e04c02915b6f670233d32f00dec3c0d1641d6830a0bb54b96253c977800c5"],
+  ["handler.d.ts", "33bafd9ba9f80f375177184a07386bd7d3026de13d3b3ae60cc20bedf6f00fe2"],
+]);
 // Strict Docker artifacts bundle this private runtime rather than resolving it
 // from npm. Keep the concrete load-bearing entries explicit instead of
 // reimplementing Node's conditional package-exports resolver here.
@@ -177,6 +186,70 @@ function collectPatchedMcpErrors(
   return errors;
 }
 
+function collectPatchedChokidarErrors(
+  { entries, packageRoot, readText }: BundledPackage,
+  manifest: Record<string, unknown>,
+): string[] {
+  const errors: string[] = [];
+  const prefix = "node_modules/chokidar/";
+  if (manifest.version !== PATCHED_CHOKIDAR_VERSION || manifest.type !== "module") {
+    errors.push(`bundled chokidar must be ESM version ${PATCHED_CHOKIDAR_VERSION}`);
+  }
+  for (const [file, hash] of PATCHED_CHOKIDAR_HASHES) {
+    if (!entries.has(prefix + file)) {
+      errors.push(`bundled chokidar is missing required runtime entry ${file}`);
+    } else if (
+      createHash("sha256")
+        .update(readText(prefix + file))
+        .digest("hex") !== hash
+    ) {
+      errors.push(`bundled chokidar has unpatched or changed runtime entry ${file}`);
+    }
+  }
+  const resolutions = resolveBundledPackageSpecifiers(packageRoot, [
+    "chokidar",
+    "chokidar/handler.js",
+  ]);
+  for (const [specifier, file] of [
+    ["chokidar", "index.js"],
+    ["chokidar/handler.js", "handler.js"],
+  ] as const) {
+    if (resolutions?.[specifier] !== pathToFileURL(path.join(packageRoot, prefix, file)).href) {
+      errors.push(
+        `bundled chokidar specifier ${specifier} does not resolve inside its bundled package`,
+      );
+    }
+  }
+  // Resolve from the importer, allowing npm's hoisted or pnpm's nested bundle layout.
+  const readdirp = resolveBundledPackageSpecifiers(path.join(packageRoot, prefix), ["readdirp"]);
+  const entry = readdirp?.readdirp;
+  const relative = entry?.startsWith("file:")
+    ? path.relative(packageRoot, fileURLToPath(entry)).replaceAll("\\", "/")
+    : "";
+  if (!relative.startsWith("node_modules/") || !entries.has(relative)) {
+    errors.push("bundled chokidar dependency readdirp must resolve inside the package artifact");
+    return errors;
+  }
+  const dependencyRoot = path.posix.dirname(relative);
+  for (const file of ["package.json", "index.d.ts", "LICENSE"]) {
+    if (!entries.has(`${dependencyRoot}/${file}`)) {
+      errors.push(`bundled chokidar dependency readdirp is missing ${file}`);
+    }
+  }
+  const dependencyManifest = `${dependencyRoot}/package.json`;
+  if (entries.has(dependencyManifest)) {
+    try {
+      const dependency: unknown = JSON.parse(readText(dependencyManifest));
+      if (!isRecord(dependency) || dependency.name !== "readdirp" || dependency.type !== "module") {
+        errors.push("bundled chokidar dependency must be the readdirp ESM package");
+      }
+    } catch {
+      errors.push("bundled chokidar dependency readdirp has an unreadable package.json");
+    }
+  }
+  return errors;
+}
+
 export function collectBundledDependencyErrors({
   packageJson,
   requireBundledWorkspaceDeps = false,
@@ -192,6 +265,7 @@ export function collectBundledDependencyErrors({
   const dependencies = isRecord(packageJson.dependencies) ? packageJson.dependencies : {};
   const bundledDependencies = new Set(listBundleDependencies(packageJson));
   const required = new Map<string, string>([
+    ["chokidar", "its patched native watcher ownership must reach npm consumers"],
     [PATCHED_MCP_NAME, "its patched runtime must not be replaced by the registry package"],
   ]);
   if (requireBundledWorkspaceDeps) {
@@ -217,6 +291,12 @@ export function collectBundledDependencyErrors({
       `package.json dependencies.${PATCHED_MCP_NAME} must be pinned to ${PATCHED_MCP_VERSION}`,
     );
   }
+  if (
+    typeof dependencies.chokidar === "string" &&
+    dependencies.chokidar !== PATCHED_CHOKIDAR_VERSION
+  ) {
+    errors.push(`package.json dependencies.chokidar must be pinned to ${PATCHED_CHOKIDAR_VERSION}`);
+  }
   for (const name of names) {
     const manifestPath = `node_modules/${name}/package.json`;
     if (!runtime.entries.has(manifestPath)) {
@@ -237,6 +317,8 @@ export function collectBundledDependencyErrors({
     const bundled = { ...runtime, name };
     if (name === PATCHED_MCP_NAME) {
       errors.push(...collectPatchedMcpErrors(bundled, manifest));
+    } else if (name === "chokidar") {
+      errors.push(...collectPatchedChokidarErrors(bundled, manifest));
     } else if (REQUIRED_BUNDLED_WORKSPACE_RUNTIME_ENTRIES.has(name)) {
       errors.push(...collectBundledPackageRuntimeErrors(bundled, manifest));
     }

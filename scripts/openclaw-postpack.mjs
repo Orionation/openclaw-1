@@ -9,10 +9,17 @@ import {
 } from "./lib/package-lifecycle-marker.mjs";
 // Restores every source artifact temporarily rewritten for npm packaging.
 import { restorePackageChangelog } from "./package-changelog.mjs";
+import { restorePackageChokidarBundle } from "./package-chokidar-bundle.mjs";
 import { restorePackageDocsMap } from "./package-docs-map.mjs";
 import { restorePackageManifest } from "./package-manifest.mjs";
 
-export async function restorePrepackArtifacts(cwd = process.cwd()) {
+export async function restorePrepackArtifacts(
+  cwd = process.cwd(),
+  { skipChokidarBundle = false } = {},
+) {
+  if (!skipChokidarBundle) {
+    await restorePackageChokidarBundle(cwd);
+  }
   await restorePackageChangelog(cwd);
   await restorePackageManifest(cwd);
   await Promise.all(

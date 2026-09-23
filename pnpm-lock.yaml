@@ -209,6 +209,7 @@ packageExtensionsChecksum: sha256-zZ8fyodhMTumshonC7kktCqTPsiHL3UAyS9vltFAlMo=
 patchedDependencies:
   '@awesome.me/webawesome@3.12.0': e30830e3b67d6b834f2257eb85dd252dcf225ed935fb69646e6c90433c85d99c
   '@novnc/novnc@1.7.0': bfde0e1bda172da3525f9f5014d85ad28073325b74f09609084598a65d2f412d
+  chokidar@5.0.0: 63365ee46df59d8d64001d09552fcbadc2b5a672dd7d64b2ad3d25ea98526583
   chrome-devtools-mcp@1.8.0: c9e9590160eb099415e7ff6e705b0e0f725e364419f91153a0207e31a71f8547
   matrix-js-sdk@42.3.0: 79bea7a0ca1c3c98635b2da6957539ab04386a2fe0ffec5498b5e9abc18b8b97
   vitest@5.0.0: 5e7c1655044613ad5d71751e82ea0e6448f7bf5a7445b86114f495866c9a3bcf
@@ -279,7 +280,7 @@ importers:
         version: 6.0.0
       chokidar:
         specifier: 5.0.0
-        version: 5.0.0
+        version: 5.0.0(patch_hash=63365ee46df59d8d64001d09552fcbadc2b5a672dd7d64b2ad3d25ea98526583)
       chrome-devtools-mcp:
         specifier: 1.8.0
         version: 1.8.0(patch_hash=c9e9590160eb099415e7ff6e705b0e0f725e364419f91153a0207e31a71f8547)
@@ -1532,7 +1533,7 @@ importers:
     dependencies:
       chokidar:
         specifier: 5.0.0
-        version: 5.0.0
+        version: 5.0.0(patch_hash=63365ee46df59d8d64001d09552fcbadc2b5a672dd7d64b2ad3d25ea98526583)
       json5:
         specifier: 2.2.3
         version: 2.2.3
@@ -13902,7 +13903,7 @@ snapshots:
   charenc@0.0.2:
     optional: true
 
-  chokidar@5.0.0:
+  chokidar@5.0.0(patch_hash=63365ee46df59d8d64001d09552fcbadc2b5a672dd7d64b2ad3d25ea98526583):
     dependencies:
       readdirp: 5.1.1
 
