@@ -5,6 +5,7 @@ import type {
   SpeechProviderConfig,
   SpeechProviderOverrides,
   SpeechProviderPlugin,
+  SpeechSynthesisRequest,
 } from "openclaw/plugin-sdk/speech-core";
 import { parseSpeechDirectiveNumberOverride } from "openclaw/plugin-sdk/speech-provider";
 import {
@@ -88,19 +89,6 @@ function resolveSpeechResponseFormat(
     return "wav";
   }
   return target === "voice-note" ? "opus" : "mp3";
-}
-
-function responseFormatToFileExtension(
-  format: OpenAiSpeechResponseFormat,
-): ".mp3" | ".opus" | ".wav" {
-  switch (format) {
-    case "opus":
-      return ".opus";
-    case "wav":
-      return ".wav";
-    default:
-      return ".mp3";
-  }
 }
 
 function readExtraBody(value: unknown): Record<string, unknown> | undefined {
@@ -233,6 +221,36 @@ function parseDirectiveToken(ctx: SpeechDirectiveTokenParseContext): {
   }
 }
 
+async function resolveOpenAITtsRequest(
+  req: SpeechSynthesisRequest,
+  responseFormatOverride?: "pcm",
+): Promise<Parameters<typeof openaiTTS>[0]> {
+  const config = readOpenAIProviderConfig(req.providerConfig);
+  const overrides = readOpenAIOverrides(req.providerOverrides, config.baseUrl);
+  const apiKey = resolveOpenAISpeechApiKey(config);
+  if (!apiKey) {
+    throw new Error("OpenAI API key missing");
+  }
+  const responseFormat =
+    responseFormatOverride ??
+    resolveSpeechResponseFormat(config.baseUrl, req.target, config.responseFormat);
+  const { resolveGeneratedMediaMaxBytes } =
+    await import("openclaw/plugin-sdk/media-generation-runtime");
+  return {
+    text: req.text,
+    apiKey,
+    baseUrl: config.baseUrl,
+    model: overrides.model ?? config.model,
+    voice: overrides.voice ?? config.voice,
+    speed: overrides.speed ?? config.speed,
+    instructions: config.instructions,
+    responseFormat,
+    extraBody: config.extraBody,
+    timeoutMs: req.timeoutMs,
+    maxBytes: resolveGeneratedMediaMaxBytes(req.cfg, "audio"),
+  };
+}
+
 export function buildOpenAISpeechProvider(): SpeechProviderPlugin {
   return {
     id: "openai",
@@ -285,37 +303,13 @@ export function buildOpenAISpeechProvider(): SpeechProviderPlugin {
     isConfigured: ({ providerConfig }) =>
       Boolean(resolveOpenAISpeechApiKey(readOpenAIProviderConfig(providerConfig))),
     synthesize: async (req) => {
-      const config = readOpenAIProviderConfig(req.providerConfig);
-      const overrides = readOpenAIOverrides(req.providerOverrides, config.baseUrl);
-      const apiKey = resolveOpenAISpeechApiKey(config);
-      if (!apiKey) {
-        throw new Error("OpenAI API key missing");
-      }
-      const responseFormat = resolveSpeechResponseFormat(
-        config.baseUrl,
-        req.target,
-        config.responseFormat,
-      );
-      const { resolveGeneratedMediaMaxBytes } =
-        await import("openclaw/plugin-sdk/media-generation-runtime");
-      const audioBuffer = await openaiTTS({
-        text: req.text,
-        apiKey,
-        baseUrl: config.baseUrl,
-        model: overrides.model ?? config.model,
-        voice: overrides.voice ?? config.voice,
-        speed: overrides.speed ?? config.speed,
-        instructions: config.instructions,
-        responseFormat,
-        extraBody: config.extraBody,
-        timeoutMs: req.timeoutMs,
-        maxBytes: resolveGeneratedMediaMaxBytes(req.cfg, "audio"),
-      });
-      const fileExtension = responseFormatToFileExtension(responseFormat);
+      const params = await resolveOpenAITtsRequest(req);
+      const audioBuffer = await openaiTTS(params);
+      const fileExtension = `.${params.responseFormat}`;
       const { isVoiceMessageCompatibleAudio } = await import("openclaw/plugin-sdk/media-runtime");
       return {
         audioBuffer,
-        outputFormat: responseFormat,
+        outputFormat: params.responseFormat,
         fileExtension,
         voiceCompatible:
           req.target === "voice-note" &&
@@ -323,30 +317,9 @@ export function buildOpenAISpeechProvider(): SpeechProviderPlugin {
       };
     },
     synthesizeTelephony: async (req) => {
-      const config = readOpenAIProviderConfig(req.providerConfig);
-      const overrides = readOpenAIOverrides(req.providerOverrides, config.baseUrl);
-      const apiKey = resolveOpenAISpeechApiKey(config);
-      if (!apiKey) {
-        throw new Error("OpenAI API key missing");
-      }
-      const outputFormat = "pcm";
-      const sampleRate = 24_000;
-      const { resolveGeneratedMediaMaxBytes } =
-        await import("openclaw/plugin-sdk/media-generation-runtime");
-      const audioBuffer = await openaiTTS({
-        text: req.text,
-        apiKey,
-        baseUrl: config.baseUrl,
-        model: overrides.model ?? config.model,
-        voice: overrides.voice ?? config.voice,
-        speed: overrides.speed ?? config.speed,
-        instructions: config.instructions,
-        responseFormat: outputFormat,
-        extraBody: config.extraBody,
-        timeoutMs: req.timeoutMs,
-        maxBytes: resolveGeneratedMediaMaxBytes(req.cfg, "audio"),
-      });
-      return { audioBuffer, outputFormat, sampleRate };
+      const params = await resolveOpenAITtsRequest({ ...req, target: "telephony" }, "pcm");
+      const audioBuffer = await openaiTTS(params);
+      return { audioBuffer, outputFormat: "pcm", sampleRate: 24_000 };
     },
   };
 }

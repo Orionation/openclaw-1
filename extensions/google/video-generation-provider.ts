@@ -36,11 +36,6 @@ const GOOGLE_VIDEO_OPERATION_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 const GOOGLE_VIDEO_EMPTY_RESULT_MESSAGE =
   "Google video generation response missing generated videos";
 
-function resolveConfiguredGoogleVideoBaseUrl(req: VideoGenerationRequest): string | undefined {
-  const configured = normalizeOptionalString(req.cfg?.models?.providers?.google?.baseUrl);
-  return configured ? resolveGoogleGenerativeAiApiOrigin(configured) : undefined;
-}
-
 function assertGeneratedVideoBufferWithinLimit(buffer: Buffer, maxBytes: number): void {
   if (buffer.length > maxBytes) {
     throw new Error(`Google generated video download exceeds ${maxBytes} bytes`);
@@ -184,7 +179,7 @@ function resolveGoogleGeneratedVideoDownloadUrl(params: {
         allowedOrigins.add(configuredOrigin);
       }
     } catch {
-      // Ignore invalid configured origins; resolveConfiguredGoogleVideoBaseUrl already normalizes.
+      // Ignore invalid configured origins; the request base URL is already normalized.
     }
   }
   if (!allowedOrigins.has(url.origin)) {
@@ -461,7 +456,10 @@ export function buildGoogleVideoGenerationProvider(): VideoGenerationProvider {
       }
       const apiKey = auth.apiKey;
 
-      const configuredBaseUrl = resolveConfiguredGoogleVideoBaseUrl(req);
+      const configuredUrl = normalizeOptionalString(req.cfg?.models?.providers?.google?.baseUrl);
+      const configuredBaseUrl = configuredUrl
+        ? resolveGoogleGenerativeAiApiOrigin(configuredUrl)
+        : undefined;
       const restBaseUrl = resolveGoogleVideoRestBaseUrl(configuredBaseUrl);
       const authHeaders = {
         ...parseGeminiAuth(apiKey).headers,
@@ -494,6 +492,16 @@ export function buildGoogleVideoGenerationProvider(): VideoGenerationProvider {
       });
       let usedRestFallback = false;
       let operation;
+      const restParams = {
+        baseUrl: restBaseUrl,
+        headers: authHeaders,
+        deadline,
+        model,
+        prompt: req.prompt,
+        durationSeconds,
+        aspectRatio,
+        resolution,
+      };
       try {
         operation = await client.models.generateVideos({
           model,
@@ -511,16 +519,7 @@ export function buildGoogleVideoGenerationProvider(): VideoGenerationProvider {
           throw error;
         }
         usedRestFallback = true;
-        operation = await generateGoogleVideoViaRest({
-          baseUrl: restBaseUrl,
-          headers: authHeaders,
-          deadline,
-          model,
-          prompt: req.prompt,
-          durationSeconds,
-          aspectRatio,
-          resolution,
-        });
+        operation = await generateGoogleVideoViaRest(restParams);
       }
 
       if (!usedRestFallback) {
@@ -547,16 +546,7 @@ export function buildGoogleVideoGenerationProvider(): VideoGenerationProvider {
       }
       let generatedVideos = extractGeneratedVideos(operation);
       if (generatedVideos.length === 0 && !hasReferenceInputs && !usedRestFallback) {
-        operation = await generateGoogleVideoViaRest({
-          baseUrl: restBaseUrl,
-          headers: authHeaders,
-          deadline,
-          model,
-          prompt: req.prompt,
-          durationSeconds,
-          aspectRatio,
-          resolution,
-        });
+        operation = await generateGoogleVideoViaRest(restParams);
         generatedVideos = extractGeneratedVideos(operation);
       }
       if (generatedVideos.length === 0) {
@@ -581,40 +571,33 @@ export function buildGoogleVideoGenerationProvider(): VideoGenerationProvider {
               fileName: `video-${index + 1}.mp4`,
             };
           }
-          const directDownload = await downloadGeneratedVideoFromUri({
-            uri: inline?.uri,
-            apiKey,
-            configuredBaseUrl,
-            mimeType: inline?.mimeType,
-            index,
-            maxBytes: maxVideoBytes,
-            timeoutMs: resolveProviderOperationTimeoutMs({
-              deadline,
-              defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
-            }),
-          });
+          const download = (uri: string | undefined) =>
+            downloadGeneratedVideoFromUri({
+              uri,
+              apiKey,
+              configuredBaseUrl,
+              mimeType: inline?.mimeType,
+              index,
+              maxBytes: maxVideoBytes,
+              timeoutMs: resolveProviderOperationTimeoutMs({
+                deadline,
+                defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+              }),
+            });
+          const directDownload = await download(inline?.uri);
           if (directDownload) {
             return directDownload;
           }
           if (!inline) {
             throw new Error("Google generated video missing file handle");
           }
-          const fileDownload = await downloadGeneratedVideoFromUri({
-            uri: resolveGoogleGeneratedVideoFileDownloadUrl({
+          const fileDownload = await download(
+            resolveGoogleGeneratedVideoFileDownloadUrl({
               file: inline,
               apiKey,
               configuredBaseUrl,
             }),
-            apiKey,
-            configuredBaseUrl,
-            mimeType: inline.mimeType,
-            index,
-            maxBytes: maxVideoBytes,
-            timeoutMs: resolveProviderOperationTimeoutMs({
-              deadline,
-              defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
-            }),
-          });
+          );
           if (!fileDownload) {
             throw new Error("Google generated video missing bounded download URL");
           }
