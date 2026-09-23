@@ -1,5 +1,4 @@
 import path from "node:path";
-import { normalizeWindowsPathForComparison } from "@openclaw/fs-safe/path";
 import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { z } from "zod";
@@ -9,6 +8,7 @@ import {
   normalizeArchiveRoot,
   type BackupSymbolicLink,
 } from "../infra/backup-archive-path-policy.js";
+import { normalizeWindowsPathForComparison } from "../infra/path-guards.js";
 import { UpdateRunDriverSchema } from "../infra/update-run-driver-schema.js";
 import { buildBackupArchivePath } from "./backup-shared.js";
 
