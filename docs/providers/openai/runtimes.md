@@ -134,10 +134,18 @@ history. If a recovered item is still running, its saved snapshot is displayed
 and ambiguous overlapping deltas are suppressed until authoritative completion;
 new items continue streaming normally.
 
+When a retry retains the native conversation, later canonical facts can also
+repair missing tool records from earlier terminal turns. These records append
+to the existing history without replaying progress or counting earlier work
+in the current attempt. Running native commands do not receive a durable result
+until their item reaches a terminal status.
+
 Native token usage is best effort and is accumulated across all admitted turns,
 including work superseded by a steering follow-up. Cached input and reasoning
 tokens remain separate usage facts. Billed tokens do not establish active
 context occupancy; that value remains unavailable.
+Completed, failed, and cancelled turn events can supply usage even when the
+saved turn has none; the harness retains that contribution and reports it once.
 
 The harness supports text, native hosted-workspace commands, and host-authorized
 OpenClaw and plugin functions. Gateway functions retain the normal tool policy,
