@@ -1,7 +1,8 @@
 import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveShardPlans, runShardPlans } from "../../scripts/ci-run-node-test-shard.mts";
-import { estimateCommandWorkerSeconds } from "../../scripts/lib/ci-command-test-plan.mts";
+import * as commandTestPlan from "../../scripts/lib/ci-command-test-plan.mts";
+import * as measuredCompactPacking from "../../scripts/lib/ci-measured-compact-packing.mts";
 import {
   createNodeTestShardBundles,
   createNodeTestShards,
@@ -24,11 +25,53 @@ describe("command CI ownership and parallel timing", () => {
   it.each(["hybrid", "blacksmith", "github"])(
     "delivers each %s command row's allocation through the shard executor",
     async (runnerBackend) => {
+      let retainedAllocationPrices = 0;
+      if (runnerBackend === "hybrid") {
+        const withoutEightWorkerSamples = (profile: "blacksmith" | "github") =>
+          Object.fromEntries(
+            Object.entries(testTimings.readCompactGroupTimings(profile)).filter(
+              ([key]) => !key.includes("#file-parallel-8"),
+            ),
+          );
+        const timings = {
+          blacksmith: withoutEightWorkerSamples("blacksmith"),
+          github: withoutEightWorkerSamples("github"),
+        };
+        vi.spyOn(testTimings, "readCompactGroupTimings").mockImplementation(
+          (profile) => timings[profile],
+        );
+        const repricing = vi.spyOn(commandTestPlan, "estimateCommandWorkerSeconds");
+        const rebalance = measuredCompactPacking.rebalanceMeasuredHybridJobs;
+        vi.spyOn(measuredCompactPacking, "rebalanceMeasuredHybridJobs").mockImplementation(
+          (jobs, options) => {
+            const groups = jobs.flatMap((job) => job.groups);
+            for (const result of repricing.mock.results) {
+              if (
+                result.type !== "return" ||
+                !result.value.timingKey?.includes("#file-parallel-8") ||
+                !parseCompactSplitTimingKey(result.value.timingKey)
+              ) {
+                continue;
+              }
+              const group = groups.find((entry) => entry.timing_key === result.value.timingKey);
+              expect(group).toBeDefined();
+              expect(options.estimateSerialGroup?.(group!), group!.shard_name).toBe(
+                result.value.seconds,
+              );
+              retainedAllocationPrices += 1;
+            }
+            return rebalance(jobs, options);
+          },
+        );
+      }
       const plan = createNodeTestShardBundles({
         compactMode: "pull-request",
         runnerBackend,
         includeReleaseOnlyPluginShards: false,
       });
+      if (runnerBackend === "hybrid") {
+        expect(retainedAllocationPrices).toBeGreaterThan(0);
+      }
       let measuredGroups = 0;
       let fallbackGroups = 0;
       for (const job of plan) {
@@ -97,12 +140,12 @@ describe("command CI ownership and parallel timing", () => {
       timing_key: "fixture#file-parallel-2",
     };
     const observations = vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({});
-    expect(estimateCommandWorkerSeconds(group, 120, 8, "blacksmith")).toEqual({
+    expect(commandTestPlan.estimateCommandWorkerSeconds(group, 120, 8, "blacksmith")).toEqual({
       timingKey: "fixture#file-parallel-8",
       seconds: 30,
     });
     expect(
-      estimateCommandWorkerSeconds(
+      commandTestPlan.estimateCommandWorkerSeconds(
         { ...group, includePatterns: group.includePatterns.slice(0, 3) },
         120,
         8,
@@ -110,7 +153,7 @@ describe("command CI ownership and parallel timing", () => {
       ).seconds,
     ).toBe(80);
     expect(
-      estimateCommandWorkerSeconds(
+      commandTestPlan.estimateCommandWorkerSeconds(
         {
           ...group,
           includePatterns: ["src/commands/doctor-config-preflight.refusal.process.test.ts"],
@@ -121,7 +164,9 @@ describe("command CI ownership and parallel timing", () => {
       ).seconds,
     ).toBe(194.3);
     observations.mockReturnValue({ "fixture#file-parallel-8": 45 });
-    expect(estimateCommandWorkerSeconds(group, 120, 8, "blacksmith").seconds).toBe(45);
+    expect(commandTestPlan.estimateCommandWorkerSeconds(group, 120, 8, "blacksmith").seconds).toBe(
+      45,
+    );
   });
 
   it("projects serial timings once, retaining complete history and indivisible files", async () => {

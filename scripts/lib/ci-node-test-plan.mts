@@ -4634,7 +4634,13 @@ function createCompactNodeTestShardBundles(
         options.runnerBackend,
       );
       savedSeconds += previousSeconds - adjusted.seconds;
-      return { ...group, timing_key: adjusted.timingKey };
+      const adjustedGroup = { ...group, timing_key: adjusted.timingKey };
+      // The replacement key has no synthesized floor; retain its admitted allocation price.
+      stripeFacts.set(adjustedGroup, {
+        seconds: adjusted.seconds,
+        family: compactStripeFamily(adjustedGroup),
+      });
+      return adjustedGroup;
     });
     job.predictedSeconds = Math.ceil(job.predictedSeconds! - savedSeconds);
   }

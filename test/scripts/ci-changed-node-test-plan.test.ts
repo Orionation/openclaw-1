@@ -2367,8 +2367,11 @@ describe("CI changed Node test plan", () => {
     expect(shards).not.toBeNull();
     expect(hasControlUiPerformanceAffectingChange([paths[2]!])).toBe(true);
     const full = createNodeTestShardBundles({
+      changedPaths: paths,
       compactMode: "pull-request",
       runnerBackend: "hybrid",
+      includeReleaseOnlyPluginShards: false,
+      includeReleaseOnlyToolingShards: true,
       includeReleaseOnlyRuntimeTests: false,
     });
     const uiOwners = full.filter((shard) =>
