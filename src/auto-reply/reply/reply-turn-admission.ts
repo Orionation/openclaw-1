@@ -328,7 +328,7 @@ export async function admitReplyTurn(
                 operation?.abortForRestart();
                 params.onLifecycleInterrupt?.();
               },
-              assertAllowed: async () => {
+              assertAllowed: async (signal) => {
                 assertDatabaseOwnerCurrent();
                 const current = await loadSessionEntryForAdmission(
                   {
@@ -338,7 +338,7 @@ export async function admitReplyTurn(
                     readConsistency: "latest",
                   },
                   {
-                    signal: params.upstreamAbortSignal,
+                    signal,
                     get deadlineMs() {
                       return (acquisitionDeadlineMs ??= Math.min(
                         params.stateAcquisitionDeadline?.() ?? Number.POSITIVE_INFINITY,

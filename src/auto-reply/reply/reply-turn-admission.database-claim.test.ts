@@ -9,6 +9,10 @@ import * as sessionEntries from "../../config/sessions/session-accessor.sqlite-e
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
 import * as acquisition from "../../infra/state-database-coordinator-acquisition.js";
 import { acquireStateDatabaseCoordinator } from "../../infra/state-database-coordinator.js";
+import {
+  runExclusiveSessionLifecycleMutation,
+  startSessionWorkAdmissionInterruption,
+} from "../../sessions/session-lifecycle-admission.js";
 import * as identity from "../../state/openclaw-agent-db-identity.js";
 import {
   closeOpenClawAgentDatabaseByPath,
@@ -249,5 +253,54 @@ it("preserves first admission to a missing durable agent store", async () => {
     expect(result.databaseClaim.isCurrent()).toBe(true);
   } finally {
     result.databaseClaim.release();
+  }
+});
+
+it("cancels an in-flight admission read when its lifecycle owner interrupts ingress", async () => {
+  const storePath = path.join(tempDirs.make("reply-admission-interrupt-"), "agent.sqlite");
+  const sessionKey = "agent:main:interrupted-read";
+  const started = createDeferred<AbortSignal>();
+  vi.spyOn(sessionEntries, "loadSessionEntryForAdmission").mockImplementation(
+    async (_scope, preparation) => {
+      const signal = preparation?.signal;
+      if (!signal) {
+        throw new Error("Admission read requires its cancellation signal");
+      }
+      started.resolve(signal);
+      return await new Promise<never>((_resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) {
+          abort();
+        }
+      });
+    },
+  );
+  const upstream = new AbortController();
+  const pending = Promise.allSettled([
+    admitReplyTurn({
+      storePath,
+      sessionKey,
+      sessionId: "interrupted-read",
+      kind: "visible",
+      resetTriggered: false,
+      upstreamAbortSignal: upstream.signal,
+    }),
+  ]);
+  const target = { scope: storePath, identities: [sessionKey] };
+  try {
+    const signal = await started.promise;
+    const reason = new Error("Synthetic lifecycle interruption");
+    const interrupted = startSessionWorkAdmissionInterruption({ ...target, reason });
+    expect(signal.aborted).toBe(true);
+    expect(upstream.signal.aborted).toBe(false);
+    await interrupted.released;
+    await runExclusiveSessionLifecycleMutation({ ...target, run: async () => {} });
+    expect(await pending).toMatchObject([{ status: "rejected", reason }]);
+    expect(registry.replyRunRegistry.get(sessionKey)).toBeUndefined();
+  } finally {
+    upstream.abort();
+    await pending;
+    await runExclusiveSessionLifecycleMutation({ ...target, run: async () => {} });
   }
 });
