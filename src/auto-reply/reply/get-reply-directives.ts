@@ -249,7 +249,9 @@ export async function resolveReplyDirectives(params: {
   // This avoids scanning skills for ordinary text, paths, and built-in slash directives.
   const skillCommands =
     canInterpretTextDirectives && (rawAliases.length > 0 || hasSkillReferences)
-      ? (await skillCommandsLoader.load()).listSkillCommandsForWorkspace({
+      ? await (
+          await skillCommandsLoader.load()
+        ).prepareSkillCommandsForWorkspace({
           ...skillCommandContext,
           skillFilter,
         })
@@ -258,7 +260,9 @@ export async function resolveReplyDirectives(params: {
 
   const allSkillCommands =
     hasSkillReferences && skillFilter !== undefined
-      ? (await skillCommandsLoader.load()).listSkillCommandsForWorkspace({
+      ? await (
+          await skillCommandsLoader.load()
+        ).prepareSkillCommandsForWorkspace({
           ...skillCommandContext,
           includeAllowlistHidden: true,
         })

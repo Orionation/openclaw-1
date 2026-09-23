@@ -190,6 +190,7 @@ function resolveMemoryToolOptions(
 
 function createLazyMemoryRuntime(host: MemoryCoreRuntimeHost): MemoryPluginRuntime {
   return {
+    supportsWorkspaceMemoryReadSources: true,
     async getMemorySearchManager(params) {
       const { createMemoryRuntime } = await loadRuntimeProviderModule();
       return await createMemoryRuntime(host).getMemorySearchManager(params);

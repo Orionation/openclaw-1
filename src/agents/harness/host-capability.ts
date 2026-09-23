@@ -64,6 +64,7 @@ import {
   withAgentQuestionAnswerAuthority,
 } from "./host-private-capabilities.js";
 import { createSessionNodeAuthorities } from "./node-execution-authority.js";
+import { bindHarnessReplyMedia } from "./reply-media.js";
 
 type AgentHarnessHostAttempt = Partial<EmbeddedRunAttemptParams> &
   Pick<EmbeddedRunAttemptParams, "admittedRunContext" | "runId">;
@@ -268,6 +269,12 @@ export function createAgentHarnessHostCapabilities(params: {
   };
   const config = attempt.config ? cloneSnapshot(attempt.config) : undefined;
   const prepareContextMedia = bindHarnessContextMedia({ attempt, config, assertActive });
+  const prepareReplyMedia = bindHarnessReplyMedia({
+    attempt,
+    config,
+    assertActive,
+    signal: capabilityAbortController.signal,
+  });
   const recorder = attempt.userTurnTranscriptRecorder;
   const sessionTarget = attempt.sessionTarget ? cloneSnapshot(attempt.sessionTarget) : undefined;
   const annotateCurrentUserTurn =
@@ -476,6 +483,7 @@ export function createAgentHarnessHostCapabilities(params: {
     },
     ...(annotateCurrentUserTurn ? { annotateCurrentUserTurn } : {}),
     ...(prepareContextMedia ? { prepareContextMedia } : {}),
+    ...(prepareReplyMedia ? { prepareReplyMedia } : {}),
     ...(trajectoryRecorder
       ? {
           trajectory: Object.freeze({

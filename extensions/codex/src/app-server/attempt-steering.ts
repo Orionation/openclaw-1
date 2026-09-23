@@ -51,7 +51,11 @@ export function createCodexSteeringQueue(params: {
   requestTimeoutMs: number;
   signal: AbortSignal;
   assertActive: () => void;
-  prepareMessage: (text: string, options: CodexSteeringQueueOptions) => Promise<CodexUserInput[]>;
+  prepareMessage: (
+    text: string,
+    options: CodexSteeringQueueOptions,
+    assertCurrent: () => void,
+  ) => Promise<CodexUserInput[]>;
   beforeSubmit?: (items: readonly CodexSteeringCommitItem[]) => Promise<void>;
 }) {
   type PendingSteerMessage = CodexSteeringQueueOptions & {
@@ -199,7 +203,13 @@ export function createCodexSteeringQueue(params: {
           continue;
         }
         try {
-          prepared.set(item, await params.prepareMessage(item.text, item));
+          prepared.set(
+            item,
+            await params.prepareMessage(item.text, item, () => {
+              assertActive();
+              item.assertCurrent();
+            }),
+          );
         } catch (error) {
           if (isCurrent(item)) {
             throw error;

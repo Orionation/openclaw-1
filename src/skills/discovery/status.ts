@@ -4,12 +4,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { evaluateEntryRequirementsForCurrentPlatform } from "../../shared/entry-status.js";
 import { CONFIG_DIR } from "../../utils.js";
-import {
-  readClawHubSkillsLockfileStatusSync,
-  resolveClawHubSkillStatusLinkSync,
-  resolveLocalSkillCardStatusSync,
-  type ClawHubSkillsLockfileStatusRead,
-} from "../lifecycle/clawhub.js";
+import { loadSkillLibrarySelection } from "../library/selection.js";
 import { resolveBundledSkillsDir } from "../loading/bundled-dir.js";
 import {
   hasBinary,
@@ -20,9 +15,14 @@ import {
   resolveSkillConfig,
   resolveSkillsInstallPreferences,
 } from "../loading/config.js";
-import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
+import {
+  loadWorkspaceSkills,
+  prepareWorkspaceSkillEntries,
+} from "../loading/workspace-skill-loader.js";
+import type { WorkspaceSkillSources } from "../loading/workspace-skill-sources.js";
 import { mergeRemoteNodeSkillEntries } from "../runtime/remote-skills.js";
 import type {
+  SkillSnapshot,
   SkillEntry,
   SkillEligibilityContext,
   SkillInstallSpec,
@@ -34,7 +34,13 @@ import {
   normalizeSkillIndexName,
   type SkillIndexEntry,
 } from "./skill-index.js";
-import type { SkillInstallOption, SkillStatusEntry, SkillStatusReport } from "./status.types.js";
+import { readWorkspaceSkillStatusFacts } from "./status-files.js";
+import type {
+  WorkspaceSkillStatusFacts,
+  SkillInstallOption,
+  SkillStatusEntry,
+  SkillStatusReport,
+} from "./status.types.js";
 export type { SkillStatusEntry, SkillStatusReport } from "./status.types.js";
 
 /** Missing prerequisites exclude intentional disablement and are independent of agent exposure. */
@@ -79,11 +85,12 @@ export function resolveSkillStatusEntry<T extends Pick<SkillStatusEntry, "name" 
 function selectPreferredInstallSpec(
   install: SkillInstallSpec[],
   prefs: SkillsInstallPreferences,
+  hasLocalBin: typeof hasBinary,
 ): SkillInstallSpec | undefined {
   const findKind = (kind: SkillInstallSpec["kind"]) => install.find((spec) => spec.kind === kind);
 
   const brewSpec = findKind("brew");
-  const brewAvailable = brewSpec && hasBinary("brew");
+  const brewAvailable = brewSpec && hasLocalBin("brew");
   return (
     (prefs.preferBrew && brewAvailable ? brewSpec : undefined) ??
     findKind("uv") ??
@@ -102,11 +109,13 @@ function selectPreferredInstallSpec(
 function normalizeInstallOptions(
   entry: SkillEntry,
   prefs: SkillsInstallPreferences,
+  hasLocalBin: typeof hasBinary,
+  platform: string,
 ): SkillInstallOption[] {
   // If the skill is explicitly OS-scoped, don't surface install actions on unsupported platforms.
   // (Installers run locally; remote OS eligibility is handled separately.)
   const requiredOs = entry.metadata?.os ?? [];
-  if (requiredOs.length > 0 && !requiredOs.includes(process.platform)) {
+  if (requiredOs.length > 0 && !requiredOs.includes(platform)) {
     return [];
   }
 
@@ -115,7 +124,6 @@ function normalizeInstallOptions(
     return [];
   }
 
-  const platform = process.platform;
   const supportsPlatform = (spec: SkillInstallSpec) => {
     const osList = spec.os ?? [];
     return osList.length === 0 || osList.includes(platform);
@@ -163,7 +171,7 @@ function normalizeInstallOptions(
     return options;
   }
 
-  const preferred = selectPreferredInstallSpec(filtered, prefs);
+  const preferred = selectPreferredInstallSpec(filtered, prefs, hasLocalBin);
   if (!preferred) {
     return [];
   }
@@ -177,10 +185,9 @@ type BuildSkillStatusContext = {
   eligibility?: SkillEligibilityContext;
   allowBundled: ReadonlySet<string> | undefined;
   agentSkillFilter?: string[];
-  workspaceDir: string;
-  clawhubLockRead: ClawHubSkillsLockfileStatusRead;
-  managedSkillsDir: string;
-  managedLockRead: ClawHubSkillsLockfileStatusRead;
+  files: WorkspaceSkillStatusFacts["files"];
+  hasWorkspaceBin: typeof hasBinary;
+  platform: string;
 };
 
 function buildSkillStatus(
@@ -189,7 +196,7 @@ function buildSkillStatus(
 ): SkillStatusEntry {
   const entry = indexed.entry;
   const skillKey = indexed.skillKey;
-  const { config, prefs, eligibility, allowBundled, agentSkillFilter, workspaceDir } = context;
+  const { config, prefs, eligibility, allowBundled, agentSkillFilter } = context;
   const skillConfig = resolveSkillConfig(config, skillKey);
   const disabled = skillConfig?.enabled === false;
   const blockedByAllowlist = !isBundledSkillAllowed(entry, allowBundled);
@@ -209,7 +216,8 @@ function buildSkillStatus(
     evaluateEntryRequirementsForCurrentPlatform({
       always,
       entry,
-      hasLocalBin: hasBinary,
+      hasLocalBin: context.hasWorkspaceBin,
+      platform: context.platform,
       remote: eligibility?.remote,
       isEnvSatisfied,
       isConfigSatisfied,
@@ -223,21 +231,15 @@ function buildSkillStatus(
   const availableToAgent = eligible && !blockedByAgentFilter;
   const userInvocable = indexed.userInvocable;
 
-  // Source ownership survives canonicalization of symlinked managed installs.
-  const isGlobalManagedSkill = !bundled && skillSource === "openclaw-managed";
-  const clawhub =
-    workspaceDir && !bundled
-      ? resolveClawHubSkillStatusLinkSync({
-          workspaceDir: isGlobalManagedSkill
-            ? path.dirname(path.resolve(context.managedSkillsDir))
-            : workspaceDir,
-          skillDir: entry.skill.baseDir,
-          skillKey,
-          lockRead: isGlobalManagedSkill ? context.managedLockRead : context.clawhubLockRead,
-          lockfileScope: isGlobalManagedSkill ? "managed" : "workspace",
-        })
-      : undefined;
-  const skillCard = resolveLocalSkillCardStatusSync(entry.skill.baseDir);
+  const fileFacts = context.files.find(
+    (facts) => facts.name === entry.skill.name && facts.filePath === entry.skill.filePath,
+  );
+  const clawhub = fileFacts?.clawhub;
+  const card = fileFacts?.skillCard;
+  // Card bodies belong to skills.skillCard, not the inventory response.
+  const skillCard = card
+    ? { present: true as const, path: card.path, sizeBytes: card.sizeBytes }
+    : undefined;
 
   return {
     name: entry.skill.name,
@@ -262,7 +264,7 @@ function buildSkillStatus(
     requirements: required,
     missing,
     configChecks,
-    install: normalizeInstallOptions(entry, prefs),
+    install: normalizeInstallOptions(entry, prefs, context.hasWorkspaceBin, context.platform),
     ...(clawhub ? { clawhub } : {}),
     ...(skillCard ? { skillCard } : {}),
   };
@@ -276,6 +278,8 @@ export function buildWorkspaceSkillStatus(
     entries?: SkillEntry[];
     eligibility?: SkillEligibilityContext;
     agentId?: string;
+    files?: WorkspaceSkillStatusFacts["files"];
+    runtime?: WorkspaceSkillSources["runtime"];
   },
 ): SkillStatusReport {
   const managedSkillsDir = opts?.managedSkillsDir ?? path.join(CONFIG_DIR, "skills");
@@ -309,13 +313,10 @@ export function buildWorkspaceSkillStatus(
   );
   const prefs = resolveSkillsInstallPreferences(opts?.config);
   const allowBundled = resolveBundledAllowlist(opts?.config);
-  const clawhubLockRead = readClawHubSkillsLockfileStatusSync(workspaceDir);
-  // Global installs are tracked beside managedSkillsDir, never by fallback.
-  const managedParentDir = path.dirname(path.resolve(managedSkillsDir));
-  const managedLockRead =
-    managedParentDir === path.resolve(workspaceDir)
-      ? clawhubLockRead
-      : readClawHubSkillsLockfileStatusSync(managedParentDir);
+  const files =
+    opts?.files ??
+    readWorkspaceSkillStatusFacts({ entries: skillEntries, workspaceDir, managedSkillsDir }).files;
+  const hostBins = opts?.runtime ? new Set(opts.runtime.bins) : undefined;
   const skillIndexEntries = buildSkillIndexEntries(skillEntries, {
     agentSkillFilter,
   });
@@ -331,11 +332,63 @@ export function buildWorkspaceSkillStatus(
         eligibility: opts?.eligibility,
         allowBundled,
         agentSkillFilter,
-        workspaceDir,
-        clawhubLockRead,
-        managedSkillsDir,
-        managedLockRead,
+        files,
+        hasWorkspaceBin: hostBins ? (bin: string) => hostBins.has(bin) : hasBinary,
+        platform: opts?.runtime?.platform ?? process.platform,
       }),
     ),
+  };
+}
+
+type WorkspaceSkillStatusOptions = NonNullable<Parameters<typeof buildWorkspaceSkillStatus>[1]>;
+
+export async function prepareWorkspaceSkillStatus(
+  workspaceDir: string,
+  opts?: WorkspaceSkillStatusOptions & {
+    librarySelections?: SkillSnapshot["librarySelections"];
+    skillCardKey?: string;
+  },
+): Promise<{ report: SkillStatusReport; files: WorkspaceSkillStatusFacts["files"] }> {
+  const { eligibility: _eligibility, ...loadOptions } = opts ?? {};
+  const sources = await prepareWorkspaceSkillEntries(workspaceDir, {
+    ...loadOptions,
+    agentSkillFilter: "ignore",
+    status: { skillCardKey: opts?.skillCardKey },
+  });
+  if (sources.runtime && !sources.status) {
+    throw new Error("Remote workspace skill status is unavailable");
+  }
+  const localEntries = sources.status
+    ? [
+        ...loadSkillLibrarySelection(opts?.librarySelections ?? []),
+        ...sources.entries.filter((entry) => entry.skill.fileHost === "gateway"),
+      ]
+    : sources.entries;
+  const localFacts =
+    localEntries.length || !sources.status
+      ? readWorkspaceSkillStatusFacts({
+          entries: localEntries,
+          workspaceDir,
+          managedSkillsDir: opts?.managedSkillsDir ?? path.join(CONFIG_DIR, "skills"),
+          skillCardKey: opts?.skillCardKey,
+        })
+      : undefined;
+  const hostPaths = new Set(
+    sources.entries
+      .filter((entry) => entry.skill.fileHost === "workspace")
+      .map((entry) => entry.skill.filePath),
+  );
+  const files = [
+    ...(sources.status?.files.filter((file) => hostPaths.has(file.filePath)) ?? []),
+    ...(localFacts?.files ?? []),
+  ];
+  return {
+    report: buildWorkspaceSkillStatus(workspaceDir, {
+      ...opts,
+      entries: sources.entries,
+      files,
+      runtime: sources.runtime,
+    }),
+    files,
   };
 }

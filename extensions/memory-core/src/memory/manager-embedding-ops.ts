@@ -1,5 +1,4 @@
 // Memory Core plugin module implements manager embedding ops behavior.
-import fs from "node:fs/promises";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { extractCuratedEntryRecallMetadata } from "openclaw/plugin-sdk/memory-core-host-engine-curated";
@@ -16,13 +15,11 @@ import {
   buildMultimodalChunkForIndexing,
   chunkMarkdown,
   hashText,
-  isFileMissingError,
   MEMORY_EMBEDDING_CACHE_TABLE,
   MEMORY_INDEX_FTS_TABLE,
   MEMORY_INDEX_VECTOR_TABLE,
   MEMORY_SEARCH_DEADLINE_CONTROL,
   remapChunkLines,
-  retryTransientMemoryRead,
   runWithConcurrency,
   stripMemoryAnnotationCarriers,
   type MemoryChunk,
@@ -53,6 +50,7 @@ import {
   runMemoryEmbeddingBatchRetryWithSplit,
   runMemoryEmbeddingRetryLoop,
 } from "./manager-embedding-policy.js";
+import { readMemoryIndexSource } from "./manager-index-source.js";
 import {
   resolveMemoryIndexProviderIdentities,
   type MemoryIndexProviderIdentity,
@@ -758,11 +756,12 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     vectorReady: boolean,
   ): Promise<void> {
     await withMemoryWorkspaceLock(this.workspaceDir, async () => {
+      this.memoryFiles?.assertCurrent();
       const published = await runSqliteImmediateTransaction(this.db, async () => {
         if (source === "memory") {
           // The lock excludes purge and promotion writers while the exact file
           // snapshot is validated and its derived index records are committed.
-          const current = await buildFileEntry(
+          const current = await (this.memoryFiles?.inspectFile ?? buildFileEntry)(
             entry.absPath,
             this.workspaceDir,
             this.settings.multimodal,
@@ -780,6 +779,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
         const needsVectorRebuild =
           !vectorReady && embeddings.some((embedding) => embedding.length > 0);
         return () => {
+          this.memoryFiles?.assertCurrent();
           if (source === "sessions") {
             const sessionId = expectDefined(entry.sessionId, "memory index session identity");
             // Embedding and vector setup may await while a purge completes. Read the
@@ -861,18 +861,23 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     generation: MemorySyncProviderGeneration | null,
   ): Promise<PreparedMemoryIndexEntry | null> {
     return await withMemoryWorkspaceLock(this.workspaceDir, async () => {
-      const pathClassification = await resolveMemoryPathClassification({
-        absolutePath: entry.absPath,
-        source: options.source,
-        workspaceDir: this.workspaceDir,
-      });
       if ("kind" in entry && entry.kind === "multimodal") {
-        const multimodalChunk = await buildMultimodalChunkForIndexing(entry);
+        const multimodalChunk: Awaited<
+          ReturnType<NonNullable<typeof this.memoryFiles>["buildMultimodalChunk"]>
+        > = await (this.memoryFiles?.buildMultimodalChunk ?? buildMultimodalChunkForIndexing)(
+          entry,
+        );
         if (!multimodalChunk) {
           this.dirty = true;
           await this.deleteIndexedFile(entry.path, options.source);
           return null;
         }
+        const pathClassification = await resolveMemoryPathClassification({
+          absolutePath: entry.absPath,
+          source: options.source,
+          workspaceDir: this.workspaceDir,
+          readSource: this.memoryFiles ? multimodalChunk : undefined,
+        });
         const chunk: IndexedMemoryChunk = {
           ...multimodalChunk.chunk,
           importance: null,
@@ -893,22 +898,18 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
         };
       }
 
-      const content =
-        options.content ??
-        entry.content ??
-        (await retryTransientMemoryRead(
-          () => fs.readFile(entry.absPath, "utf-8"),
-          `read memory markdown for indexing ${entry.absPath}`,
-        ).catch((err: unknown) => {
-          if (options.source !== "memory" || !isFileMissingError(err)) {
-            throw err;
-          }
-          return null;
-        }));
-      if (content === null) {
+      const read = await readMemoryIndexSource({
+        absolutePath: entry.absPath,
+        workspaceDir: this.workspaceDir,
+        source: options.source,
+        suppliedContent: options.content ?? entry.content,
+        memoryFiles: this.memoryFiles,
+      });
+      if (!read) {
         this.dirty = true;
         return null;
       }
+      const { content, pathClassification } = read;
       // Hash, chunk, and embed one immutable read; publication validates it again.
       const snapshot = options.source === "memory" ? { ...entry, hash: hashText(content) } : entry;
       const normalizedEntryPath = entry.path.replaceAll("\\", "/");

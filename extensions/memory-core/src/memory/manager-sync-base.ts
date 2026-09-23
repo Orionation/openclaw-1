@@ -1,6 +1,5 @@
 // Memory Core plugin module owns shared manager synchronization state.
 import type { DatabaseSync } from "node:sqlite";
-import type { FSWatcher } from "chokidar";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   createSubsystemLogger,
@@ -17,6 +16,7 @@ import {
   type MemorySessionSyncTarget,
   type MemoryEntryProvenance,
   type MemorySource,
+  type MemoryWorkspaceFiles,
   type MemorySyncParams,
   type MemorySyncProgressUpdate,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
@@ -53,7 +53,6 @@ import {
   requiresMemoryVectorRebuild,
 } from "./manager-vector-rebuild-state.js";
 import { buildMemorySourceFilter } from "./source-filter.js";
-import type { MemoryWatchSettleQueue } from "./watch-settle.js";
 
 export type MemorySyncProgressState = {
   completed: number;
@@ -108,6 +107,9 @@ const VECTOR_LOAD_TIMEOUT_MS = 30_000;
 const log = createSubsystemLogger("memory");
 
 export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext {
+  protected readonly memoryFiles?: MemoryWorkspaceFiles;
+  protected memoryWatchSubscription?: AbortController;
+  protected memoryWatchUnavailable = false;
   protected readonly acquireLocalService?: MemoryCoreAcquireLocalService;
   protected abstract readonly cfg: OpenClawConfig;
   protected abstract readonly agentId: string;
@@ -131,13 +133,10 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
     { eligible: number | null; issues: string[] }
   >();
   protected providerKey: string | null = null;
-  protected watcher: FSWatcher | null = null;
-  protected watchTimer: NodeJS.Timeout | null = null;
   protected sessionWatchTimer: NodeJS.Timeout | null = null;
   protected sessionUnsubscribe: (() => void) | null = null;
   protected fallbackReason?: string;
   protected intervalTimer: NodeJS.Timeout | null = null;
-  protected memoryWatchPressureStartupTimer: NodeJS.Timeout | null = null;
   protected closed = false;
   protected dirty = false;
   // A success clears only the failure visible when it started. This keeps a
@@ -147,7 +146,6 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
   // Failed full memory reindexes must retry as full rebuilds, not incremental
   // dirty syncs that can skip unchanged files against the still-live index.
   protected memoryFullRetryDirty = false;
-  protected pendingWatchPaths: MemoryWatchSettleQueue = new Map();
   protected sessionsDirty = false;
   // Failed full reindexes can start with no per-file dirty set. Keep a
   // one-shot all-sessions retry marker so the next non-force sync cannot skip.

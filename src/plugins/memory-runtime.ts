@@ -231,7 +231,10 @@ export async function classifyActiveMemoryWorkspacePaths(
   if (!owner) {
     return { status: "unavailable" };
   }
-  if (!owner.runtime.classifyWorkspaceMemoryPaths) {
+  if (
+    !owner.runtime.classifyWorkspaceMemoryPaths ||
+    (params.readSources !== undefined && !owner.runtime.supportsWorkspaceMemoryReadSources)
+  ) {
     return { status: "unsupported" };
   }
   const classifications = await withMemoryRuntimeOwner(

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { readLocalSkillCardContentSync } from "../lifecycle/clawhub.js";
+import { readLocalSkillCardContentSync } from "../lifecycle/clawhub-status.js";
 import { createCanonicalFixtureSkill } from "../test-support/test-helpers.js";
 import type { SkillEntry } from "../types.js";
 import { buildWorkspaceSkillStatus } from "./status.js";
@@ -13,6 +13,29 @@ type SkillStatus = ReturnType<typeof buildWorkspaceSkillStatus>["skills"][number
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("buildWorkspaceSkillStatus", () => {
+  it("selects dependency recipes using the workspace host platform and binaries", () => {
+    const hostPlatform = process.platform === "darwin" ? "linux" : "darwin";
+    const entry = createEntry("host-installer", {
+      metadata: {
+        os: [hostPlatform],
+        install: [
+          { id: "gateway-only", kind: "node", package: "wrong-package", os: [process.platform] },
+          { id: "brew", kind: "brew", formula: "host-package", os: [hostPlatform] },
+          { id: "node", kind: "node", package: "host-package", os: [hostPlatform] },
+        ],
+      },
+    });
+    const status = (bins: string[]) =>
+      buildWorkspaceSkillStatus("/tmp/host-installer", {
+        entries: [entry],
+        files: [],
+        runtime: { platform: hostPlatform, bins },
+        config: { skills: { install: { preferBrew: true } } },
+      }).skills[0];
+    expect(status(["brew"])?.install.map((item) => item.id)).toEqual(["brew"]);
+    expect(status([])?.install.map((item) => item.id)).toEqual(["node"]);
+  });
+
   it("reports blank env requirements as missing", () => {
     const envName = "OPENCLAW_TEST_BLANK_SKILL_STATUS";
     const original = process.env[envName];

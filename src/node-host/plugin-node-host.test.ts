@@ -5,6 +5,7 @@ import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plug
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import {
   invokeRegisteredNodeHostCommand,
+  isRegisteredNodeHostCommandDuplex,
   listRegisteredNodeHostCapsAndCommands,
   notifyRegisteredNodeHostCommandDisconnect,
   watchRegisteredNodeHostCommandAvailability,
@@ -17,6 +18,30 @@ afterEach(() => {
 });
 
 describe("plugin node-host registry", () => {
+  it("advertises optional duplex to unary nodes and forwards IO only when available", async () => {
+    const handle = vi.fn(async () => "{}");
+    const registry = createEmptyPluginRegistry();
+    registry.nodeHostCommands.push({
+      pluginId: "files",
+      source: "test",
+      command: { command: "file.fetch", cap: "file", duplex: "optional", handle },
+    });
+    setActivePluginRegistry(registry);
+    expect(
+      listRegisteredNodeHostCapsAndCommands(availabilityContext, { includeDuplex: false }).commands,
+    ).toEqual(["file.fetch"]);
+    expect(isRegisteredNodeHostCommandDuplex("file.fetch")).toBe(true);
+    await expect(invokeRegisteredNodeHostCommand("file.fetch", "{}")).resolves.toBe("{}");
+    expect(handle).toHaveBeenLastCalledWith("{}", undefined);
+    const io = {
+      signal: new AbortController().signal,
+      emitChunk: async () => {},
+      onInput: () => {},
+    };
+    await invokeRegisteredNodeHostCommand("file.fetch", "{}", io);
+    expect(handle).toHaveBeenLastCalledWith("{}", io);
+  });
+
   it("lists plugin-declared caps and commands", () => {
     const registry = createEmptyPluginRegistry();
     registry.nodeHostCommands = [

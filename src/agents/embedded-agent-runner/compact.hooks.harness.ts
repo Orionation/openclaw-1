@@ -1013,7 +1013,9 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
 
   vi.doMock("../../skills/loading/workspace-skill-loader.js", () => {
     return {
-      loadWorkspaceSkills: vi.fn(() => []),
+      prepareWorkspaceSkills: vi.fn<
+        typeof import("../../skills/loading/workspace-skill-loader.js").prepareWorkspaceSkills
+      >(async () => []),
     };
   });
 

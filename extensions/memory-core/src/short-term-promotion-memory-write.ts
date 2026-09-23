@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { extractErrorCode } from "openclaw/plugin-sdk/error-runtime";
+import type { MemoryWorkspaceFiles } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
+import { getMemoryWorkspaceMaintenance, readWorkspaceText } from "./memory-workspace-files.js";
+
+type MemoryFileCommit = Parameters<
+  NonNullable<MemoryWorkspaceFiles["maintenance"]>["commitContent"]
+>[0];
 
 export function buildPromotionMarker(candidateKey: string): string {
   return `<!-- openclaw-memory-promotion:${candidateKey} -->`;
@@ -21,7 +28,27 @@ export class MemoryWriteConflictError extends Error {
   }
 }
 
-export async function resolveMemoryWritePath(filePath: string): Promise<string> {
+export class MemoryAtomicPublicationError extends Error {
+  readonly code: ReturnType<typeof extractErrorCode>;
+
+  constructor(
+    readonly publication: "uncertain" | "committed",
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = cause instanceof Error ? cause.name : "Error";
+    this.code = extractErrorCode(cause);
+  }
+}
+
+export async function resolveMemoryWritePath(
+  filePath: string,
+  workspaceDir?: string,
+): Promise<string> {
+  const files = workspaceDir ? getMemoryWorkspaceMaintenance(workspaceDir) : undefined;
+  if (files) {
+    return await files.resolveWritePath(filePath);
+  }
   try {
     return await fs.realpath(filePath);
   } catch (err) {
@@ -56,8 +83,10 @@ export async function resolveMemoryWritePath(filePath: string): Promise<string> 
   return await resolveMemoryWritePath(targetPath);
 }
 
-export async function readMemoryContent(filePath: string): Promise<string> {
-  return await fs.readFile(filePath, "utf-8").catch((error: unknown) => {
+export async function readMemoryContent(filePath: string, workspaceDir?: string): Promise<string> {
+  return await (
+    workspaceDir ? readWorkspaceText(workspaceDir, filePath) : fs.readFile(filePath, "utf-8")
+  ).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return "";
     }
@@ -126,19 +155,32 @@ export function hashMemoryContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-type MemoryContentCommit =
-  | { content: string; expectedContent?: string }
-  | { content: null; expectedContent: string };
-
 export async function commitMemoryContent(
-  params: {
-    filePath: string;
-    tempPrefix: string;
-    expectedHash?: string;
-    allowInPlaceFallback?: boolean;
-    conflictMessage?: string;
-  } & MemoryContentCommit,
+  params: MemoryFileCommit & { workspaceDir?: string },
 ): Promise<void> {
+  const files = params.workspaceDir
+    ? getMemoryWorkspaceMaintenance(params.workspaceDir)
+    : undefined;
+  if (files) {
+    const { workspaceDir: _workspaceDir, ...request } = params;
+    try {
+      return await files.commitContent(request);
+    } catch (error) {
+      // Preserve the native caller's conflict and publication handling across IPC.
+      if (error instanceof Error && error.name === "MemoryWriteConflictError") {
+        throw new MemoryWriteConflictError(error.message);
+      }
+      if (
+        error &&
+        typeof error === "object" &&
+        "publication" in error &&
+        (error.publication === "uncertain" || error.publication === "committed")
+      ) {
+        throw new MemoryAtomicPublicationError(error.publication, error);
+      }
+      throw error;
+    }
+  }
   if (params.content === null) {
     if ((await readMemoryContent(params.filePath)) !== params.expectedContent) {
       throw new MemoryWriteConflictError(params.conflictMessage);
@@ -148,6 +190,11 @@ export async function commitMemoryContent(
     return;
   }
   const memoryDirMode = (await fs.stat(path.dirname(params.filePath))).mode & 0o7777;
+  const expectedHash = params.expectedHash;
+  const replacementContent = params.content;
+  const publication: {
+    state: "unattempted" | "unchanged-after-rejection" | "uncertain" | "committed";
+  } = { state: "unattempted" };
   try {
     await replaceFileAtomic({
       filePath: params.filePath,
@@ -174,7 +221,29 @@ export async function commitMemoryContent(
           mkdir: fs.mkdir,
           chmod: fs.chmod,
           writeFile: fs.writeFile,
-          rename: fs.rename,
+          rename: async (from, to) => {
+            publication.state = "uncertain";
+            try {
+              await fs.rename(from, to);
+            } catch (error) {
+              if (
+                isAtomicReplacePermissionError(error) &&
+                expectedHash &&
+                hashMemoryContent(replacementContent) !== expectedHash
+              ) {
+                // Errno alone proves no outcome. Reconcile this rejected rename's target.
+                try {
+                  if (hashMemoryContent(await readMemoryContent(String(to))) === expectedHash) {
+                    publication.state = "unchanged-after-rejection";
+                  }
+                } catch {
+                  // An unavailable preimage leaves the dispatched mutation uncertain.
+                }
+              }
+              throw error;
+            }
+            publication.state = "committed";
+          },
           copyFile: fs.copyFile,
           unlink: fs.unlink,
           rm: fs.rm,
@@ -198,6 +267,9 @@ export async function commitMemoryContent(
         conflictMessage: params.conflictMessage,
       }))
     ) {
+      if (publication.state === "uncertain" || publication.state === "committed") {
+        throw new MemoryAtomicPublicationError(publication.state, error);
+      }
       throw error;
     }
   }

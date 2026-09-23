@@ -191,6 +191,7 @@ export abstract class MemoryKeywordRetrieval extends MemoryProviderLifecycle {
       temporalDecay: params.temporalDecay,
       workspaceDir: this.workspaceDir,
       sessionSourceMtimes: this.loadSessionSourceMtimes(params.results),
+      memorySourceMtimes: this.loadRemoteMemorySourceMtimes(params.results),
     });
     // Preserve specificity and adjusted body relevance before normalizing exact public scores.
     const ranked = applyProjectRanking(applyImportanceMultiplier(decayed), params.activeProjectKeys)
@@ -204,6 +205,24 @@ export abstract class MemoryKeywordRetrieval extends MemoryProviderLifecycle {
       );
     return this.toMemorySearchResults(
       this.selectScoredResults(ranked, params.maxResults, params.minScore, 0),
+    );
+  }
+
+  protected loadRemoteMemorySourceMtimes(
+    results: ReadonlyArray<Pick<MemorySearchResult, "path" | "source">>,
+  ): ReadonlyMap<string, number | undefined> | undefined {
+    if (!this.memoryFiles) {
+      return undefined;
+    }
+    const paths = results.filter((entry) => entry.source === "memory").map((entry) => entry.path);
+    if (paths.length === 0) {
+      return undefined;
+    }
+    return new Map(
+      loadMemorySourceFileState({ db: this.db, source: "memory", paths }).map((row) => [
+        row.path,
+        row.mtime,
+      ]),
     );
   }
 

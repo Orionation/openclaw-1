@@ -6,13 +6,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SKILL_LIBRARY_MAX_FILE_BYTES } from "../../../packages/gateway-protocol/src/schema/skill-library.js";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { declareAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { ensureProfileForEmail, linkEmail, setDisplayName } from "../../state/user-profiles.js";
-import { withEnv, withEnvAsync } from "../../test-utils/env.js";
+import { withEnvAsync } from "../../test-utils/env.js";
 import { materializeSkillResources, prepareSkillResourceDelivery } from "../runtime/resources.js";
 import { prepareSkillLibraryBundle, skillLibraryRevisionDir } from "./bundle.js";
 import { uploadSkillLibrary } from "./import.js";
@@ -102,7 +103,7 @@ describe("profile-owned skill publication and selection", () => {
       const entries = loadSkillLibrarySelection(pins, options);
       const { buildSkillSnapshot } = await import("../loading/workspace-skill-prompt.js");
       const { buildWorkspaceSkillCommandSpecs } = await import("../discovery/command-specs.js");
-      const snapshot = buildSkillSnapshot(stateDir, { entries });
+      const snapshot = await buildSkillSnapshot(stateDir, { entries });
       const commands = buildWorkspaceSkillCommandSpecs(stateDir, { entries });
       expect(pins[0]!.name).toMatch(/^s_long_skil_[a-f0-9]{20}$/);
       expect(commands[0]).toMatchObject({
@@ -115,7 +116,7 @@ describe("profile-owned skill publication and selection", () => {
         ...entries[0]!,
         skill: { ...entries[0]!.skill, source: "openclaw-workspace" },
       };
-      expect(() => buildSkillSnapshot(stateDir, { entries: [copied, ...entries] })).toThrow(
+      await expect(buildSkillSnapshot(stateDir, { entries: [copied, ...entries] })).rejects.toThrow(
         "ambiguous",
       );
       expect(() =>
@@ -137,8 +138,12 @@ describe("profile-owned skill publication and selection", () => {
       },
       options,
     );
-    const { listSkillCommandsForWorkspace } = await import("../discovery/chat-commands.js");
-    withEnv({ OPENCLAW_STATE_DIR: stateDir }, () => {
+    const {
+      listSkillCommandsForWorkspace,
+      listSkillCommandsForAgents,
+      prepareSkillCommandsForAgents,
+    } = await import("../discovery/chat-commands.js");
+    await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
       const cfg = { agents: { defaults: { skills: [] } } };
       const discover = (
         overrides: Partial<Parameters<typeof listSkillCommandsForWorkspace>[0]> = {},
@@ -165,6 +170,21 @@ describe("profile-owned skill publication and selection", () => {
         }).map((entry) => entry.name),
       ).not.toContain(saved.entry.name);
       expect(discover({ sessionEntry: undefined, skillFilter: [saved.entry.name] })).toEqual([]);
+      const agentParams = {
+        cfg: {
+          agents: {
+            defaults: { skills: [saved.entry.name] },
+            list: [{ id: "main", workspace: stateDir }],
+          },
+        },
+        agentIds: ["main"],
+        sessionEntry: { skillLibrarySelections: pins },
+      };
+      expect(listSkillCommandsForAgents(agentParams)).toEqual(commands);
+      expect(await prepareSkillCommandsForAgents(agentParams)).toEqual(commands);
+      expect(
+        await prepareSkillCommandsForAgents({ ...agentParams, sessionEntry: undefined }),
+      ).toEqual([]);
     });
   });
 
@@ -377,6 +397,14 @@ describe("profile-owned skill publication and selection", () => {
     const delivery = await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, () =>
       prepareSkillResourceDelivery(snapshot, () => {}),
     );
+    // Library bytes belong to Gateway even when the workspace host is offline.
+    const remoteWorkspace = path.join(stateDir, "remote-workspace");
+    declareAgentWorkspaceAccess(remoteWorkspace);
+    await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+      await expect(
+        prepareSkillResourceDelivery(snapshot, () => {}, [], remoteWorkspace),
+      ).resolves.toEqual(delivery);
+    });
     expect(delivery).toBeDefined();
     const materialized = await materializeSkillResources(delivery!, () => {});
     try {
@@ -427,7 +455,10 @@ describe("profile-owned skill publication and selection", () => {
       const pins = seedSkillLibrarySelection(alice, options);
       const entries = loadSkillLibrarySelection(pins, options);
       const { buildSkillSnapshot } = await import("../loading/workspace-skill-prompt.js");
-      const snapshot = { ...buildSkillSnapshot(stateDir, { entries }), librarySelections: pins };
+      const snapshot = {
+        ...(await buildSkillSnapshot(stateDir, { entries })),
+        librarySelections: pins,
+      };
       expect(snapshot.resolvedSkills).toEqual([]);
       await saveSkillLibrary(
         alice,
@@ -480,7 +511,7 @@ describe("library admission and imports", () => {
       config: ["channels.fixture.enabled"],
     });
     const { buildSkillSnapshot } = await import("../loading/workspace-skill-prompt.js");
-    const snapshot = buildSkillSnapshot(stateDir, {
+    const snapshot = await buildSkillSnapshot(stateDir, {
       entries: selected,
       config: {
         skills: {

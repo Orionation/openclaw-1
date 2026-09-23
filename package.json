@@ -868,6 +868,10 @@
       "types": "./dist/plugin-sdk/agent-harness-runtime.d.ts",
       "default": "./dist/plugin-sdk/agent-harness-runtime.js"
     },
+    "./plugin-sdk/agent-workspace-runtime": {
+      "types": "./dist/plugin-sdk/agent-workspace-runtime.d.ts",
+      "default": "./dist/plugin-sdk/agent-workspace-runtime.js"
+    },
     "./plugin-sdk/agent-harness-tool-runtime": {
       "default": "./dist/plugin-sdk/agent-harness-tool-runtime.js"
     },
@@ -2159,7 +2163,7 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "@mozilla/readability": "0.6.0",
     "@openclaw/ai": "workspace:*",
-    "@openclaw/fs-safe": "0.8.5",
+    "@openclaw/fs-safe": "0.17.0",
     "@openclaw/proxyline": "0.3.12",
     "@silvia-odwyer/photon-node": "0.3.4",
     "@trycua/cua-driver": "0.22.2",

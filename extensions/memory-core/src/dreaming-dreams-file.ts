@@ -5,6 +5,7 @@ import { extractErrorCode } from "openclaw/plugin-sdk/error-runtime";
 import { replaceManagedMarkdownBlock } from "openclaw/plugin-sdk/memory-host-markdown";
 import { readRegularFile, replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+import { getMemoryWorkspaceMaintenance } from "./memory-workspace-files.js";
 import { withMemoryWorkspaceLock } from "./memory-workspace-lock.js";
 import { readStore } from "./short-term-promotion-store.js";
 
@@ -12,7 +13,11 @@ export const DREAMS_FILENAMES = ["DREAMS.md", "dreams.md"] as const;
 const DEEP_START_MARKER = "<!-- openclaw:dreaming:deep:start -->";
 const DEEP_END_MARKER = "<!-- openclaw:dreaming:deep:end -->";
 
-async function resolveDreamsPath(workspaceDir: string): Promise<string> {
+export async function resolveDreamsPath(workspaceDir: string): Promise<string> {
+  const files = getMemoryWorkspaceMaintenance(workspaceDir);
+  if (files) {
+    return await files.resolveDreamsPath();
+  }
   for (const name of DREAMS_FILENAMES) {
     const target = path.join(workspaceDir, name);
     try {
@@ -43,7 +48,11 @@ function isEmptyDreamsReadError(err: unknown): boolean {
   return err instanceof Error && err.message === "path must be a regular file";
 }
 
-export async function readDreamsFile(dreamsPath: string): Promise<string> {
+export async function readDreamsFile(dreamsPath: string, workspaceDir?: string): Promise<string> {
+  const files = workspaceDir ? getMemoryWorkspaceMaintenance(workspaceDir) : undefined;
+  if (files) {
+    return await files.readDreams(dreamsPath);
+  }
   try {
     return (await readRegularFile({ filePath: dreamsPath })).buffer.toString("utf-8");
   } catch (err) {
@@ -72,7 +81,16 @@ async function assertSafeDreamsPath(dreamsPath: string): Promise<void> {
   }
 }
 
-async function writeDreamsFileAtomic(dreamsPath: string, content: string): Promise<void> {
+export async function writeDreamsFileAtomic(
+  dreamsPath: string,
+  content: string,
+  workspaceDir?: string,
+): Promise<void> {
+  const files = workspaceDir ? getMemoryWorkspaceMaintenance(workspaceDir) : undefined;
+  if (files) {
+    return await files.writeDreams(dreamsPath, content);
+  }
+  await fs.mkdir(path.dirname(dreamsPath), { recursive: true });
   await assertSafeDreamsPath(dreamsPath);
   await replaceFileAtomic({
     filePath: dreamsPath,
@@ -101,11 +119,14 @@ export async function updateDreamsFile<T>(params: {
   // cannot write a pre-deletion file snapshot back over the scrubbed contents.
   return await withMemoryWorkspaceLock(params.workspaceDir, async () => {
     const dreamsPath = await resolveDreamsPath(params.workspaceDir);
-    const existing = await readDreamsFile(dreamsPath);
+    const existing = await readDreamsFile(dreamsPath, params.workspaceDir);
     const { content, result, shouldWrite = true } = await params.updater(existing, dreamsPath);
     if (shouldWrite) {
-      await fs.mkdir(path.dirname(dreamsPath), { recursive: true });
-      await writeDreamsFileAtomic(dreamsPath, content.endsWith("\n") ? content : `${content}\n`);
+      await writeDreamsFileAtomic(
+        dreamsPath,
+        content.endsWith("\n") ? content : `${content}\n`,
+        params.workspaceDir,
+      );
     }
     return result;
   });
@@ -255,7 +276,7 @@ export async function readRecentDreamDiaryEntries(params: {
   let existing: string;
   try {
     const dreamsPath = await resolveDreamsPath(params.workspaceDir);
-    existing = await readDreamsFile(dreamsPath);
+    existing = await readDreamsFile(dreamsPath, params.workspaceDir);
   } catch (err) {
     if (isOptionalDiaryContextReadError(err)) {
       return [];

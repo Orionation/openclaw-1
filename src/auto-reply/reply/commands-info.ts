@@ -5,7 +5,7 @@ import {
 } from "../../agents/tools-effective-inventory.js";
 import { getChannelPlugin } from "../../channels/plugins/index.js";
 import {
-  listSkillCommandsForAgents,
+  prepareSkillCommandsForAgents,
   resolveSkillCommandInvocation,
 } from "../../skills/discovery/chat-commands.js";
 import {
@@ -42,7 +42,7 @@ async function resolveSkillCommands(
   if (params.loadSkillCommands) {
     return params.loadSkillCommands();
   }
-  return listSkillCommandsForAgents({
+  return prepareSkillCommandsForAgents({
     cfg: params.cfg,
     agentIds: [params.agentId],
     sessionEntry: params.sessionEntry,

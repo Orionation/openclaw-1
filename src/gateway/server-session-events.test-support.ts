@@ -67,7 +67,7 @@ vi.mock("../agents/embedded-agent-runner/runs.js", async () => {
 const { createLifecycleEventBroadcastHandler, createTranscriptUpdateBroadcastHandler } =
   await import("./server-session-events.js");
 const { createGatewayBroadcaster } = await import("./server-broadcast.js");
-const { subscribePluginSessionsChanged } = await import("../plugins/gateway-events.js");
+const { subscribePluginSessionsChanged } = await import("../plugins/services.test-support.js");
 
 function createActiveRun(
   projectSessionActive: boolean,

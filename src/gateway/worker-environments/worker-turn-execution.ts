@@ -253,6 +253,7 @@ export async function executeWorkerTurn(
         }
       },
       turn.explicitSkillSelections,
+      turn.workspaceDir,
     );
     if (
       skillResources &&

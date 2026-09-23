@@ -52,6 +52,12 @@ export function registerNodeCli(program: Command) {
       "--pair <code-or-url>",
       "Pair with a setup code or oc-pair URL; explicit gateway flags take precedence",
     )
+    .addOption(
+      new Option(
+        "--pair-if-needed <code-or-url>",
+        "Use the saved device token when available; otherwise pair with this setup code",
+      ).conflicts("pair"),
+    )
     .option("--host <host>", "Gateway host")
     .option("--port <port>", "Gateway port")
     .option("--context-path <path>", "Gateway WebSocket context path (e.g. /openclaw-gw)")
@@ -67,7 +73,8 @@ export function registerNodeCli(program: Command) {
       let pair;
       let gatewayOptions;
       try {
-        pair = opts.pair ? resolveNodePairGatewayOptions(opts.pair) : undefined;
+        const setupCode = opts.pair ?? opts.pairIfNeeded;
+        pair = setupCode ? resolveNodePairGatewayOptions(setupCode) : undefined;
         const existing = await loadNodeHostConfig();
         gatewayOptions = resolveNodeGatewayOptions(opts, existing, pair);
       } catch (error) {
@@ -97,7 +104,8 @@ export function registerNodeCli(program: Command) {
         gatewayCandidates,
         gatewayBootstrapToken: pair?.bootstrapToken,
         preferGatewayBootstrapToken: pair !== undefined,
-        ...(opts.ephemeral === true ? { forceWorkerRuns: true, ephemeral: true } : {}),
+        ...(opts.ephemeral === true || opts.sessionHost === true ? { forceWorkerRuns: true } : {}),
+        ...(opts.ephemeral === true ? { ephemeral: true } : {}),
         nodeId: opts.nodeId,
         displayName: opts.displayName,
         installedAppsSharing: opts.shareInstalledApps,

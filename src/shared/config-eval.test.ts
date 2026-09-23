@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { withTempDirSync } from "../test-helpers/temp-dir.js";
+import { withTempDirSync, withTestDir } from "../test-helpers/temp-dir.js";
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 import {
   evaluateRuntimeEligibility,
   hasBinary,
   isConfigPathTruthyWithDefaults,
+  prepareBinaryAvailability,
 } from "./config-eval.js";
 
 function setPlatform(platform: NodeJS.Platform): void {
@@ -173,6 +174,73 @@ describe("config-eval helpers", () => {
       });
     },
   );
+});
+
+describe("prepared binary availability", () => {
+  it("sees an installation on the next operation while preserving successful cache reuse", async () => {
+    await withTestDir({ prefix: "openclaw-prepared-binary-" }, async (binDir) => {
+      vi.stubEnv("PATH", binDir);
+      const executable = path.join(binDir, "fixture-tool");
+      expect((await prepareBinaryAvailability(["fixture-tool"])).hasBinary("fixture-tool")).toBe(
+        false,
+      );
+      fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(executable, 0o755);
+      expect((await prepareBinaryAvailability(["fixture-tool"])).hasBinary("fixture-tool")).toBe(
+        true,
+      );
+      fs.unlinkSync(executable);
+      expect(hasBinary("fixture-tool")).toBe(true);
+      vi.stubEnv("PATH", path.join(binDir, "other"));
+      expect(hasBinary("fixture-tool")).toBe(false);
+    });
+  });
+
+  it("does not publish an awaited hit into a different PATH cache", async () => {
+    await withTestDir({ prefix: "openclaw-prepared-path-" }, async (binDir) => {
+      const executable = path.join(binDir, "fixture-tool");
+      fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(executable, 0o755);
+      vi.stubEnv("PATH", binDir);
+      const pending = prepareBinaryAvailability(["fixture-tool"]);
+      vi.stubEnv("PATH", path.join(binDir, "other"));
+      expect(hasBinary("fixture-tool")).toBe(false);
+      expect((await pending).isCurrent()).toBe(false);
+      expect(hasBinary("fixture-tool")).toBe(false);
+    });
+  });
+
+  it("invalidates prepared PATHEXT candidates without changing synchronous successful-hit semantics", async () => {
+    await withTestDir({ prefix: "openclaw-prepared-pathext-" }, async (binDir) => {
+      mockProcessPlatform("win32");
+      const executable = path.join(binDir, "fixture-tool.CMD");
+      fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(executable, 0o755);
+      vi.stubEnv("PATH", binDir);
+      vi.stubEnv("PATHEXT", undefined);
+      const pending = prepareBinaryAvailability(["fixture-tool"]);
+      vi.stubEnv("PATHEXT", "");
+      expect((await pending).isCurrent()).toBe(false);
+      expect(hasBinary("fixture-tool")).toBe(false);
+      vi.stubEnv("PATHEXT", ".CMD");
+      expect((await prepareBinaryAvailability(["fixture-tool"])).hasBinary("fixture-tool")).toBe(
+        true,
+      );
+    });
+  });
+
+  it("keeps filesystem lookup semantics for nested binary names", async () => {
+    await withTestDir({ prefix: "openclaw-prepared-nested-" }, async (binDir) => {
+      fs.mkdirSync(path.join(binDir, "nested"));
+      const executable = path.join(binDir, "nested", "fixture-tool");
+      fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(executable, 0o755);
+      vi.stubEnv("PATH", binDir);
+      const bin = path.join("nested", "fixture-tool");
+      expect((await prepareBinaryAvailability([bin])).hasBinary(bin)).toBe(true);
+      expect(hasBinary(bin)).toBe(true);
+    });
+  });
 });
 
 describe("runtime requirements through eligibility", () => {

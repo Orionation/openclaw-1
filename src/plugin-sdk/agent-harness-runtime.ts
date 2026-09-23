@@ -359,6 +359,7 @@ export async function detectAndLoadAgentHarnessPromptImages(params: {
   prompt: string;
   userTurnTranscriptRecorder?: EmbeddedAgentQueueMessageOptions["userTurnTranscriptRecorder"];
   workspaceDir: string;
+  agentWorkspaceDir?: string;
   model: { input?: string[] };
   existingImages?: ImageContent[];
   imageOrder?: PromptImageOrderEntry[];
@@ -384,6 +385,7 @@ export async function detectAndLoadAgentHarnessPromptImages(params: {
   return detectAndLoadPromptImages({
     prompt: params.prompt,
     workspaceDir: params.workspaceDir,
+    agentWorkspaceDir: params.agentWorkspaceDir,
     model: params.model,
     existingImages: params.existingImages,
     imageOrder: params.imageOrder,

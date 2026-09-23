@@ -34,6 +34,15 @@ minimumReleaseAgeExclude:
   - "zod@4.5.2"
   - "@openai/codex"
   - "@openai/codex-*"
+  # Reviewed fs-safe 0.17.0 release and native helpers; remove after 2026-09-27T16:54:36Z.
+  - "@openclaw/fs-safe@0.17.0"
+  - "@openclaw/fs-safe-darwin-arm64@0.17.0"
+  - "@openclaw/fs-safe-darwin-x64@0.17.0"
+  - "@openclaw/fs-safe-linux-arm64-gnu@0.17.0"
+  - "@openclaw/fs-safe-linux-arm64-musl@0.17.0"
+  - "@openclaw/fs-safe-linux-x64-gnu@0.17.0"
+  - "@openclaw/fs-safe-linux-x64-musl@0.17.0"
+  - "@openclaw/fs-safe-win32-x64-msvc@0.17.0"
   # fs-safe 0.8.5 reviewed hardlink policy fix; remove after 2026-09-14 09:53 UTC.
   - "@openclaw/fs-safe@0.8.5"
   - "@openclaw/fs-safe-darwin-arm64@0.8.5"

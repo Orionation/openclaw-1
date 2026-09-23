@@ -202,7 +202,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: restore the shipped read-only conversation-binding inspection facade.
       // +1: canonical node CLI owners for plugin-provided node commands.
       // +3: typed feature contracts, backend registration, and native Control UI hosting.
-      152,
+      // +1: backport the approved agent-workspace-runtime contract.
+      153,
       env,
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
@@ -363,7 +364,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: one exec policy object replaces two deprecated comparator exports.
       // +1: approved bounded TAR inspection through the archive admission owner.
       // +1: canonical runtime-context classifier for native history projection.
-      4447,
+      // +12: backport the approved split-storage contracts to this release baseline.
+      4459,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -495,7 +497,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -2: exec comparators are members of the shared policy object.
       // +1: approved bounded TAR inspection through the archive admission owner.
       // +1: canonical runtime-context classifier for native history projection.
-      2629,
+      // +10: backport the approved split-storage operations to this release baseline.
+      2639,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

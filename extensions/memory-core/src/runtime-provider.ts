@@ -33,6 +33,7 @@ export function createMemoryRuntime(host: MemoryCoreRuntimeHost = {}) {
         await import("./session-search-visibility.js");
       return await filterMemorySearchHitsBySessionVisibility(params);
     },
+    supportsWorkspaceMemoryReadSources: true,
     classifyWorkspaceMemoryPaths,
     closeAllMemorySearchManagers,
     closeMemorySearchManager,

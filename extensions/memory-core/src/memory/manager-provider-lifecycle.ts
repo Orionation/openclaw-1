@@ -518,12 +518,15 @@ export abstract class MemoryProviderLifecycle extends MemoryManagerEmbeddingOps 
   }
 
   protected async withManagerOperation<T>(run: () => Promise<T>): Promise<T> {
+    this.memoryFiles?.assertCurrent();
     if (this.closing || this.closed) {
       throw new Error("Memory index manager is closed");
     }
     this.activeManagerOperations += 1;
     try {
-      return await this.withPublishedDatabase(run);
+      const result = await this.withPublishedDatabase(run);
+      this.memoryFiles?.assertCurrent();
+      return result;
     } finally {
       this.activeManagerOperations -= 1;
       if (this.activeManagerOperations === 0) {

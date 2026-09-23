@@ -1,3 +1,4 @@
+import { getAgentWorkspaceAccess } from "openclaw/plugin-sdk/agent-workspace-runtime";
 // Memory Core plugin module implements the concrete memory index manager.
 import { formatErrorMessage, toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import {
@@ -19,6 +20,7 @@ import {
   type MemorySearchManager,
   type MemorySessionSyncTarget,
   type MemorySyncParams,
+  type MemoryWorkspaceFiles,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import { borrowOpenClawAgentDatabase } from "openclaw/plugin-sdk/sqlite-runtime";
@@ -84,6 +86,7 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
   protected readonly cacheKey: string;
   protected readonly purpose: MemoryIndexManagerPurpose;
   protected override readonly acquireLocalService?: MemoryCoreAcquireLocalService;
+  protected override readonly memoryFiles?: MemoryWorkspaceFiles;
   protected readonly cfg: OpenClawConfig;
   protected readonly agentId: string;
   protected readonly workspaceDir: string;
@@ -123,6 +126,7 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
   protected indexIdentityState: MemoryIndexIdentityState;
 
   static async get(params: {
+    memoryFiles?: MemoryWorkspaceFiles;
     cfg: OpenClawConfig;
     agentId: string;
     purpose?: MemoryIndexManagerPurpose;
@@ -131,6 +135,8 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
     maintenanceSource?: MemoryIndexManager;
   }): Promise<MemoryIndexManager | null> {
     const source = params.maintenanceSource;
+    const memoryFiles = source?.memoryFiles ?? params.memoryFiles;
+    memoryFiles?.assertCurrent();
     const cfg = source?.cfg ?? params.cfg;
     const agentId = source?.agentId ?? normalizeAgentId(params.agentId);
     const purpose = normalizeMemoryIndexManagerPurpose(params.purpose);
@@ -166,6 +172,7 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
                 cfg,
                 agentId,
                 workspaceDir,
+                memoryFiles,
                 settings,
                 providerRequirement,
                 purpose,
@@ -175,9 +182,14 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
               if (params.inspectSources) {
                 await manager.inspectDiagnosticSourceState();
               }
+              memoryFiles?.assertCurrent();
               return manager;
             },
-            reuse: (manager) => !manager.closing && !manager.closed && manager.db.isOpen,
+            reuse: (manager) =>
+              !manager.closing &&
+              !manager.closed &&
+              manager.db.isOpen &&
+              manager.memoryFiles === memoryFiles,
           };
         },
       },
@@ -185,6 +197,7 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
   }
 
   private constructor(params: {
+    memoryFiles?: MemoryWorkspaceFiles;
     cacheKey: string;
     cfg: OpenClawConfig;
     agentId: string;
@@ -205,6 +218,7 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
     this.cfg = params.cfg;
     this.agentId = params.agentId;
     this.workspaceDir = params.workspaceDir;
+    this.memoryFiles = params.memoryFiles;
     this.settings = effectiveSettings;
     this.providerRequirement = params.providerRequirement;
     this.requestedProvider = effectiveSettings.provider;
@@ -489,7 +503,13 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
     from?: number;
     lines?: number;
   }): Promise<MemoryReadResult> {
-    return await readMemoryFile({
+    // Session-only indexes remain local; explicit reads still use the workspace owner.
+    const access = this.memoryFiles
+      ? undefined
+      : getAgentWorkspaceAccess(this.workspaceDir, "memoryFiles");
+    const files = this.memoryFiles ?? access?.memoryFiles;
+    files?.assertCurrent();
+    return await (files?.readFile ?? readMemoryFile)({
       workspaceDir: this.workspaceDir,
       extraPaths: this.settings.extraPaths,
       relPath: params.relPath,
@@ -654,10 +674,6 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
     this.closed = true;
     const pendingProviderInit = this.providerInitPromise;
     const pendingFallbackInit = this.getPendingFallbackProviderInitialization();
-    if (this.watchTimer) {
-      clearTimeout(this.watchTimer);
-      this.watchTimer = null;
-    }
     if (this.sessionWatchTimer) {
       clearTimeout(this.sessionWatchTimer);
       this.sessionWatchTimer = null;
@@ -666,15 +682,7 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
       clearInterval(this.intervalTimer);
       this.intervalTimer = null;
     }
-    if (this.memoryWatchPressureStartupTimer) {
-      clearTimeout(this.memoryWatchPressureStartupTimer);
-      this.memoryWatchPressureStartupTimer = null;
-    }
-    if (this.watcher) {
-      await this.watcher.close();
-      this.watcher = null;
-    }
-    this.closeNativeMemoryWatchPairs();
+    await this.closeMemoryWatcher();
     if (this.sessionUnsubscribe) {
       this.sessionUnsubscribe();
       this.sessionUnsubscribe = null;

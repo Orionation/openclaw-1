@@ -60,7 +60,7 @@ describe.each(["uv", "go"] as const)("%s bootstrap cache freshness", (kind) => {
           metadata: { install: [{ id: "deps", ...spec }] },
         };
       });
-      skillsInstallTesting.setDepsForTest({ loadWorkspaceSkills: () => entries });
+      skillsInstallTesting.setDepsForTest({ prepareWorkspaceSkills: async () => entries });
 
       let bootstraps = 0;
       let recipes = 0;

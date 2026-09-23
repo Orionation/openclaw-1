@@ -22,13 +22,13 @@ import {
   createPluginRuntimeCapabilityLease,
   type PluginRuntimeCapabilityLease,
 } from "./capability-lease.js";
-import { subscribePluginSessionsChanged } from "./gateway-events.js";
-import { isPluginJsonValue, type PluginJsonValue } from "./host-hook-json.js";
+import { createPluginServiceGatewayEvents } from "./gateway-events.js";
 import { withPluginHttpRouteRegistry } from "./http-registry.js";
 import type { PluginServiceRegistration } from "./registry-types.js";
 import type { PluginRegistry } from "./registry.js";
 import { createPluginServiceCronGetter, type PluginServiceCronHost } from "./service-cron.js";
 import { createPluginServiceHealthGeneration } from "./service-health.js";
+import { createPluginServiceNodeInvoker } from "./service-nodes.js";
 import { encodeStartupTraceSegment } from "./startup-trace-segment.js";
 import type { OpenClawPluginServiceContext, PluginLogger } from "./types.js";
 
@@ -60,6 +60,8 @@ function createServiceContext(params: {
   serviceHealth: NonNullable<OpenClawPluginServiceContext["serviceHealth"]>;
   gatewayEvents?: OpenClawPluginServiceContext["gatewayEvents"];
   getCron?: OpenClawPluginServiceContext["getCron"];
+  invokeNode?: OpenClawPluginServiceContext["invokeNode"];
+  openNodeDuplex?: OpenClawPluginServiceContext["openNodeDuplex"];
   lease: PluginRuntimeCapabilityLease;
 }): OpenClawPluginServiceContext {
   const isDiagnosticsExporter =
@@ -113,6 +115,8 @@ function createServiceContext(params: {
     logger: createPluginLogger(),
     serviceHealth: params.serviceHealth,
     ...(params.getCron ? { getCron: params.getCron } : {}),
+    ...(params.invokeNode ? { invokeNode: params.invokeNode } : {}),
+    ...(params.openNodeDuplex ? { openNodeDuplex: params.openNodeDuplex } : {}),
     ...(params.gatewayEvents ? { gatewayEvents: params.gatewayEvents } : {}),
     ...(params.startupTrace
       ? {
@@ -123,48 +127,6 @@ function createServiceContext(params: {
         }
       : {}),
     ...(internalDiagnostics ? { internalDiagnostics } : {}),
-  };
-}
-
-function createScopedGatewayEvents(params: {
-  pluginId: string;
-  broadcast?: GatewayPluginEventBroadcastFn;
-  lease: PluginRuntimeCapabilityLease;
-}): {
-  gatewayEvents?: OpenClawPluginServiceContext["gatewayEvents"];
-} {
-  // No broadcaster means no gateway events at all: emits have nowhere to go and
-  // sessions.changed is queued by the broadcaster itself. Omitting the facade
-  // keeps `ctx.gatewayEvents` presence as the capability signal plugins
-  // feature-detect; a silently dropping emit would defeat their fallbacks.
-  if (!params.broadcast) {
-    return {};
-  }
-  const broadcast = params.broadcast;
-  return {
-    gatewayEvents: {
-      emit: (event, payload: PluginJsonValue, opts) => {
-        params.lease.assertActive("gateway event emitter");
-        if (!/^[a-z][a-z0-9_-]*$/u.test(event)) {
-          throw new Error(`invalid plugin gateway event name: ${event}`);
-        }
-        if (!isPluginJsonValue(payload)) {
-          throw new Error("plugin gateway event payload must be bounded JSON");
-        }
-        if (
-          opts?.scope !== "operator.read" &&
-          opts?.scope !== "operator.write" &&
-          opts?.scope !== "operator.admin"
-        ) {
-          throw new Error("plugin gateway event scope must be an operator scope");
-        }
-        broadcast(`plugin.${params.pluginId}.${event}`, payload, opts.scope);
-      },
-      onSessionsChanged: (handler) => {
-        params.lease.assertActive("gateway event subscriber");
-        return params.lease.retain(subscribePluginSessionsChanged(handler));
-      },
-    },
   };
 }
 
@@ -219,6 +181,7 @@ export async function startPluginServices(params: {
     diagnosticsExporter: boolean;
     registration: PluginServiceRegistration;
     stopping: boolean;
+    stopNodeInvocations?: () => void;
     stop?: () => void | Promise<void>;
     cleanup?: Promise<void>;
     startup?: Promise<void>;
@@ -261,6 +224,7 @@ export async function startPluginServices(params: {
     beforeStop?: Promise<void>,
   ) => {
     entry.stopping = true;
+    entry.stopNodeInvocations?.();
     try {
       const cleanup = () => {
         if (!entry.cleanup) {
@@ -313,6 +277,7 @@ export async function startPluginServices(params: {
   ) => {
     for (const entry of entries) {
       entry.stopping = true;
+      entry.stopNodeInvocations?.();
     }
     const reversed = entries.toReversed();
     const oneShotTimeouts = deadline === undefined ? params.oneShotStopTimeouts : undefined;
@@ -419,7 +384,7 @@ export async function startPluginServices(params: {
     const service = entry.service;
     const traceName = createPluginServiceTraceName(entry);
     const lease = createPluginRuntimeCapabilityLease("plugin service");
-    const scopedGatewayEvents = createScopedGatewayEvents({
+    const gatewayEvents = createPluginServiceGatewayEvents({
       pluginId: entry.pluginId,
       broadcast: params.broadcastPluginEvent,
       lease,
@@ -427,13 +392,25 @@ export async function startPluginServices(params: {
     const serviceHealth = healthGeneration.createReporter(entry);
     lease.retain(serviceHealth.revoke);
     serviceHealth.health.clearFailure();
+    const record = params.registry.plugins.find((plugin) => plugin.id === entry.pluginId);
+    const nodeInvoker = record
+      ? createPluginServiceNodeInvoker({
+          registry: params.registry,
+          record,
+          lease,
+          isStopping: () => stopRequested || ownedService.stopping,
+        })
+      : undefined;
     const serviceContext = createServiceContext({
       config,
       startupTrace: params.startupTrace,
       workspaceDir: params.workspaceDir,
       service: entry,
       serviceHealth: serviceHealth.health,
-      gatewayEvents: scopedGatewayEvents.gatewayEvents,
+      gatewayEvents,
+      ...(nodeInvoker
+        ? { invokeNode: nodeInvoker.invoke, openNodeDuplex: nodeInvoker.openDuplex }
+        : {}),
       ...(params.getCronService
         ? {
             getCron: createPluginServiceCronGetter({
@@ -449,6 +426,7 @@ export async function startPluginServices(params: {
       id: service.id,
       registration: entry,
       stopping: false,
+      stopNodeInvocations: nodeInvoker?.stop,
       pluginId: entry.pluginId,
       diagnosticsExporter: serviceContext.internalDiagnostics !== undefined,
       stop: service.stop ? () => service.stop?.(serviceContext) : undefined,

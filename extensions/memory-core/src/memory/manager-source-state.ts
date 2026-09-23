@@ -7,6 +7,7 @@ import {
   runWithConcurrency,
   type MemoryFileEntry,
   type MemorySource,
+  type MemoryWorkspaceFiles,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import {
   executeSqliteQuerySync,
@@ -39,8 +40,9 @@ export async function resolveMemorySourceFileEntries(params: {
   settings: Pick<ResolvedMemorySearchConfig, "extraPaths" | "multimodal">;
   concurrency: number;
   onSkippedSymlinkRoot?: (root: string) => void;
+  files?: MemoryWorkspaceFiles;
 }): Promise<MemoryFileEntry[]> {
-  const files = await listMemoryFiles(
+  const files = await (params.files?.listFiles ?? listMemoryFiles)(
     params.workspaceDir,
     params.settings.extraPaths,
     params.settings.multimodal,
@@ -50,7 +52,11 @@ export async function resolveMemorySourceFileEntries(params: {
     await runWithConcurrency(
       files.map(
         (file) => async () =>
-          await buildFileEntry(file, params.workspaceDir, params.settings.multimodal),
+          await (params.files?.inspectFile ?? buildFileEntry)(
+            file,
+            params.workspaceDir,
+            params.settings.multimodal,
+          ),
       ),
       params.concurrency,
     )
@@ -74,6 +80,7 @@ export async function inspectMemorySourceState(params: {
   workspaceDir: string;
   settings: Pick<ResolvedMemorySearchConfig, "extraPaths" | "multimodal">;
   concurrency: number;
+  files?: MemoryWorkspaceFiles;
 }): Promise<MemorySourceInspection> {
   const skippedRoots = new Set<string>();
   const entries = await resolveMemorySourceFileEntries({

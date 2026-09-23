@@ -4,6 +4,16 @@ const currentModuleUrl = import.meta.url;
 export const SQLITE_READONLY_CHILD_ARG = "--openclaw-sqlite-readonly-child";
 
 export const runtimeProcessEntrypoints = {
+  workspaceSkills: {
+    currentModuleUrl,
+    sourceWorkerName: "../worker/skills-worker-entry",
+    distWorkerPath: "worker/skills-worker-entry.js",
+  },
+  workspaceMemory: {
+    currentModuleUrl,
+    sourceWorkerName: "../worker/memory-worker-entry",
+    distWorkerPath: "worker/memory-worker-entry.js",
+  },
   stateMigrationSnapshot: {
     currentModuleUrl,
     sourceWorkerName: "state-migrations.snapshot.worker",

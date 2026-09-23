@@ -223,11 +223,12 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
       // No watcher can observe later edits after kernel capacity exhaustion.
       // Record a fresh generation at the search boundary so detached maintenance
       // receives the fact instead of starting from a clean transient manager.
-      if (this.memoryWatchCapacityDegraded) {
+      if (this.memoryWatchCapacityDegraded || this.memoryWatchUnavailable) {
         this.dirty = true;
       }
       const capacitySyncInFlight =
-        this.memoryWatchCapacityDegraded && this.activeBackgroundSearchSyncs.size > 0;
+        (this.memoryWatchCapacityDegraded || this.memoryWatchUnavailable) &&
+        this.activeBackgroundSearchSyncs.size > 0;
       if (searchSyncEnabled && !capacitySyncInFlight && (this.dirty || this.sessionsDirty)) {
         const trackedSearchSync = this.syncPublishedIndexInBackground({ reason: "search" })
           .catch((err: unknown) => {
@@ -443,6 +444,7 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
           temporalDecay: hybrid.temporalDecay,
           workspaceDir: this.workspaceDir,
           sessionSourceMtimes: this.loadSessionSourceMtimes(vectorResults),
+          memorySourceMtimes: this.loadRemoteMemorySourceMtimes(vectorResults),
         });
         // Decay and importance can reverse the order returned by vector retrieval.
         return applyProjectRanking(applyImportanceMultiplier(decayed), opts?.activeProjectKeys)
@@ -574,6 +576,7 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
       activeProjectKeys: params.activeProjectKeys,
       workspaceDir: this.workspaceDir,
       sessionSourceMtimes: this.loadSessionSourceMtimes([...params.vector, ...params.keyword]),
+      memorySourceMtimes: this.loadRemoteMemorySourceMtimes([...params.vector, ...params.keyword]),
     });
   }
 }

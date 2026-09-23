@@ -30,6 +30,78 @@ model discovery, auth preparation, or Responses parameters. An explicit
 observation, not a native ownership claim. Bound native sessions use the separate
 ownership contract below.
 
+### Workspace files on the harness host
+
+A trusted host plugin can bind the existing `agents.files.list/get/set` methods
+and the `agents.update` identity form
+to a provisioned remote workspace using `AgentWorkspaceAccess`, exported from
+`openclaw/plugin-sdk/agent-workspace-runtime`. It supplies the `stat`, `readFile`,
+and `writeFile` methods of an existing `SandboxFsBridge`; no new file daemon is
+required.
+
+| Host lifecycle      | Action                                                                                    |
+| ------------------- | ----------------------------------------------------------------------------------------- |
+| Plugin registration | Call `declareAgentWorkspaceAccess(workspaceDir)` before file requests can arrive.         |
+| Service start       | Call `registerAgentWorkspaceAccess(workspaceDir, { bridge })` after host access is ready. |
+| Service stop        | Call the returned release function. Requests fail instead of using a stale local copy.    |
+
+The binding lasts across harness turns. The host provisions the workspace and
+selects and authenticates the remote target; Gateway does not seed a second
+workspace. Gateway keeps its existing document allowlist and authorization.
+Unconfigured workspaces keep local access. `expectedHash` retains the existing
+best-effort conflict check: native shell writers do not participate in the
+Gateway save queue, and a transport failure can leave the write outcome unknown.
+
+Bootstrap loading requires the bridge's `readFileWithSource` operation. It
+returns bytes and the canonical path pinned by that read, so the existing
+session filters can recognize aliases of protected root Memory files. A separate
+path lookup is not sufficient. Configured extra-file globs also require
+`readDirectory`. Missing capabilities fail explicitly. Post-compaction context
+also reads `AGENTS.md` through the binding; an unavailable host never selects a
+stale local copy.
+
+For automatic Memory context, the same read also returns `workspaceRelativePath`
+for files within the workspace mount. Memory Core classifies that source using
+its existing rules and Gateway provenance records, without probing Gateway-local
+files. Other Memory plugins must declare `supportsWorkspaceMemoryReadSources`
+and consume the classifier's `readSources` input; otherwise automatic remote
+Memory context is excluded. Missing source metadata cannot select a local copy.
+
+Async Skill preparation can use the binding's optional `loadSkills` callback.
+It reads workspace-owned Skill roots on the Harness, while bundled and
+Gateway-installed plugin roots stay on Gateway. The callback returns native
+discovery facts and Harness platform/binary availability; Gateway still applies
+configuration and filters. Local workspaces and document-only bindings without
+`loadSkills` retain local discovery, including after the document service stops.
+Once a binding provides `loadSkills`, unavailable remote Skill access fails explicitly.
+
+This binding provides remote document and bootstrap access. It does not enable
+a remote OpenClaw worker or move its agent loop. Memory search and maintenance,
+skills, attachments, and host provisioning require separate integration and
+verification before removing workspace synchronization.
+
+### Input attachments for a remote workspace
+
+A trusted Gateway plugin can supply `prepareTurnAttachments` on its existing
+`AgentWorkspaceAccess` binding. Core calls `prepareAgentWorkspaceAttachments`
+from `openclaw/plugin-sdk/agent-workspace-runtime` to resolve admitted input files
+and invoke this capability before a harness attempt or Codex steering.
+It appends the returned Harness-path note only to execution input. Original media
+references and transcript text stay on Gateway for image hydration and replay.
+
+`createWorkspaceAttachmentPreparer` implements this callback over an existing
+filesystem bridge with `createFileExclusive`. It reads only Gateway's media
+store, transfers input files without replacing existing Harness copies, and
+preserves the existing 50 MiB staging allowance and higher configured limits.
+The host supplies `createBridge(assertCurrent, signal)` over its own backend;
+check that authority and signal before each transport command.
+
+A failed enabled transfer prevents dispatch. Bindings without this optional
+callback keep their existing input handling, including inline images; they do
+not gain automatic file transfer. Unconfigured local workspaces are unchanged. This interface does
+not provision a backend or acquire credentials. Each host adapter supplies its
+own authorized bridge.
+
 ### Native tool-policy enforcement
 
 Set `conversationToolPolicySupport: "exact"` only when `runAttempt` enforces every

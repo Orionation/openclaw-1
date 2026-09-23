@@ -716,7 +716,7 @@ extensions/memory-core/src/cli-runtime-common.ts	2
 extensions/memory-core/src/cli-status.runtime.ts	2
 extensions/memory-core/src/cli.ts	1
 extensions/memory-core/src/concept-vocabulary.ts	1
-extensions/memory-core/src/dreaming-phases.ts	2
+extensions/memory-core/src/dreaming-phases.ts	1
 extensions/memory-core/src/dreaming.ts	1
 extensions/memory-core/src/memory/embeddings.ts	2
 extensions/memory-core/src/memory/hybrid.ts	1
@@ -728,7 +728,6 @@ extensions/memory-core/src/memory/manager-search-orchestration.ts	1
 extensions/memory-core/src/memory/manager-search.ts	6
 extensions/memory-core/src/memory/manager-sync-base.ts	4
 extensions/memory-core/src/memory/manager-vector-rebuild-state.ts	1
-extensions/memory-core/src/memory/manager-watch-ops.ts	4
 extensions/memory-core/src/memory/manager.ts	2
 extensions/memory-core/src/memory/search-deadline.ts	1
 extensions/memory-core/src/migration/doctor-host-event-sources.ts	1
@@ -740,7 +739,7 @@ extensions/memory-core/src/session-backfill-lifecycle.ts	2
 extensions/memory-core/src/session-backfill.ts	1
 extensions/memory-core/src/session-ingestion.ts	2
 extensions/memory-core/src/session-reset-recall-metadata.ts	3
-extensions/memory-core/src/short-term-promotion-apply.ts	4
+extensions/memory-core/src/short-term-promotion-apply.ts	2
 extensions/memory-core/src/short-term-promotion-memory-write.ts	4
 extensions/memory-core/src/short-term-promotion-record.ts	1
 extensions/memory-core/src/short-term-promotion-rehydrate.ts	1
@@ -2033,7 +2032,7 @@ src/agents/utils/frontmatter.ts	2
 src/agents/utils/tools-manager.ts	2
 src/agents/workspace-legacy-state.ts	2
 src/agents/workspace-state-store.ts	1
-src/agents/workspace.ts	6
+src/agents/workspace.ts	5
 src/agents/worktrees/git.ts	2
 src/agents/worktrees/provisioned-files.ts	3
 src/agents/worktrees/registry.ts	11
@@ -2776,7 +2775,7 @@ src/gateway/server-methods/config.ts	7
 src/gateway/server-methods/cron.ts	17
 src/gateway/server-methods/device-scope-upgrade.ts	2
 src/gateway/server-methods/devices.ts	6
-src/gateway/server-methods/doctor.ts	5
+src/gateway/server-methods/doctor.ts	3
 src/gateway/server-methods/exec-approval.ts	3
 src/gateway/server-methods/exec-approvals.ts	2
 src/gateway/server-methods/mcp-app.ts	1

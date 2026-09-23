@@ -23,6 +23,7 @@ import {
 import { applyMemoryConsolidationPlan, consolidateMemory } from "./dreaming-consolidation.js";
 import { compactMemoryForBudget, DEFAULT_MEMORY_FILE_MAX_CHARS } from "./memory-budget.js";
 import { pruneMemoryEntryOrigins, reserveMemoryEntryOrigins } from "./memory-entry-origins.js";
+import { readWorkspaceFile } from "./memory-workspace-files.js";
 import { withMemoryWorkspaceLock } from "./memory-workspace-lock.js";
 import {
   buildPromotionMarker,
@@ -30,6 +31,7 @@ import {
   extractPromotionKeys,
   hashMemoryContent,
   isAtomicReplacePermissionError,
+  MemoryAtomicPublicationError,
   MemoryWriteConflictError,
   readMemoryContent,
   resolveMemoryWritePath,
@@ -202,7 +204,7 @@ async function promotionSourceFingerprint(
 ): Promise<string> {
   for (const sourcePath of resolveShortTermSourcePathCandidates(workspaceDir, candidate.path)) {
     try {
-      const content = await fs.readFile(sourcePath);
+      const content = await readWorkspaceFile(workspaceDir, sourcePath);
       return createHash("sha256").update(content).digest("hex");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -363,13 +365,8 @@ export async function applyShortTermPromotions(
   );
   // Promotions historically follow user-managed MEMORY.md symlinks. Replace the
   // final target atomically without severing the chain, matching the prior writeFile path.
-  let memoryWritePath = await resolveMemoryWritePath(memoryPath);
-  let existingMemory = await fs.readFile(memoryWritePath, "utf-8").catch((err: unknown) => {
-    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
-      return "";
-    }
-    throw err;
-  });
+  let memoryWritePath = await resolveMemoryWritePath(memoryPath, workspaceDir);
+  let existingMemory = await readMemoryContent(memoryWritePath, workspaceDir);
   let existingMarkers = new Set(extractPromotionKeys(existingMemory));
   let alreadyWritten = rehydratedSelected.filter((candidate) => existingMarkers.has(candidate.key));
   let toAppend = rehydratedSelected.filter((candidate) => !existingMarkers.has(candidate.key));
@@ -452,13 +449,8 @@ export async function applyShortTermPromotions(
           authoritativeSelected.push(currentCandidate);
         }
       }
-      memoryWritePath = await resolveMemoryWritePath(memoryPath);
-      existingMemory = await fs.readFile(memoryWritePath, "utf-8").catch((err: unknown) => {
-        if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
-          return "";
-        }
-        throw err;
-      });
+      memoryWritePath = await resolveMemoryWritePath(memoryPath, workspaceDir);
+      existingMemory = await readMemoryContent(memoryWritePath, workspaceDir);
       existingMarkers = new Set(extractPromotionKeys(existingMemory));
       alreadyWritten = authoritativeSelected.filter((candidate) =>
         existingMarkers.has(candidate.key),
@@ -516,8 +508,8 @@ export async function applyShortTermPromotions(
         }
       }
       if (consolidationResult && consolidationPlan) {
-        // Reserve the union before publishing its replacement. A failed origin
-        // write must leave MEMORY unchanged; uncommitted rewrites release only new rows.
+        // Reserve lineage before publication; release new rows only when the
+        // file owner rules out a replacement or reconciles an unchanged target.
         const rollbackOrigins = reserveMemoryEntryOrigins({
           agentIds: originAgentIds,
           previousMemory: existingMemory,
@@ -525,6 +517,7 @@ export async function applyShortTermPromotions(
         });
         try {
           await commitMemoryContent({
+            workspaceDir,
             filePath: memoryWritePath,
             tempPrefix: `${path.basename(memoryPath)}.promotion`,
             expectedHash: consolidationBaseMemoryHash,
@@ -536,6 +529,9 @@ export async function applyShortTermPromotions(
           }
           appendedCandidates = toAppend.length;
         } catch (error) {
+          if (error instanceof MemoryAtomicPublicationError) {
+            throw error;
+          }
           rollbackOrigins();
           if (
             !(error instanceof MemoryWriteConflictError) &&
@@ -548,7 +544,7 @@ export async function applyShortTermPromotions(
               ? "MEMORY.md changed immediately before the consolidation rename"
               : "the MEMORY.md directory blocked atomic replacement";
           consolidationResult = null;
-          existingMemory = await readMemoryContent(memoryWritePath);
+          existingMemory = await readMemoryContent(memoryWritePath, workspaceDir);
           existingMarkers = new Set(extractPromotionKeys(existingMemory));
           alreadyWritten = authoritativeSelected.filter((candidate) =>
             existingMarkers.has(candidate.key),
@@ -589,6 +585,7 @@ export async function applyShortTermPromotions(
           // Append fallback keeps the historical read-modify-replace contract. Policy accepts
           // its external-editor race because OpenClaw writers remain serialized by this sweep lock.
           await commitMemoryContent({
+            workspaceDir,
             filePath: memoryWritePath,
             tempPrefix: `${path.basename(memoryPath)}.promotion`,
             expectedHash: hashMemoryContent(existingMemory),

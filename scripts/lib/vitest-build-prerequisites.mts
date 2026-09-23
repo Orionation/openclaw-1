@@ -26,6 +26,12 @@ export type VitestRuntimeTestSelection = {
 // while unrelated workers may still be importing its public plugin facades.
 const runtimeConsumers = [
   {
+    file: "extensions/file-transfer/src/workspace-service.test.ts",
+    configs: ["test/vitest/vitest.extensions.config.ts"],
+    mode: "runtime",
+    dir: "extensions",
+  },
+  {
     file: "test/agent-exec-code-mode.live.test.ts",
     configs: ["test/vitest/vitest.live.config.ts"],
     mode: "runtime",

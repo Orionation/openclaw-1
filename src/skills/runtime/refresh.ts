@@ -1,31 +1,28 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import chokidar, { type FSWatcher } from "chokidar";
-import { isDefaultStateDir } from "../../config/paths.js";
+import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveRealpathOrAbsolute } from "../../infra/boundary-path.js";
 import { getFileWatchCapacityCode } from "../../infra/fs-watch-errors.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
-import { CONFIG_DIR, resolveUserPath } from "../../utils.js";
+import { tryRealpath } from "../loading/symlink-targets.js";
+import { normalizeWorkspaceSkillRoots } from "../loading/workspace-skill-roots.js";
 import {
-  resolvePluginSkillRoots,
-  resolvePluginSkillRootsFromMetadata,
-} from "../loading/plugin-skills.js";
-import {
-  resolveAllowedSkillSymlinkTargetRealPaths,
-  tryRealpath,
-} from "../loading/symlink-targets.js";
-import {
-  normalizeWorkspaceSkillRoots,
-  resolveWorkspaceSkillDirectories,
-} from "../loading/workspace-skill-roots.js";
-import { resolveWorkshopWatchRoots } from "../workshop/skills-root.js";
+  resolveWorkspaceSkillSourcePlan,
+  splitSkillSourcePlan,
+  type WorkspaceSkillSourcePlan,
+} from "../loading/workspace-skill-sources.js";
 import { areOrderedArraysEqual } from "./ordered-array-equality.js";
+import {
+  closeRemoteSkillsWatchers,
+  disposeRemoteSkillsWatcher,
+  ensureRemoteSkillsWatcher,
+} from "./refresh-remote.js";
+import { resolveSkillsWatchSourceRoots } from "./refresh-source-roots.js";
 import {
   bumpSkillsSnapshotVersion,
   clearSkillsSnapshotVersionForWorkspace,
@@ -119,32 +116,18 @@ function resolveWatchTargets(
   executionWorkspaceDir: string | undefined,
   watcherKey: string,
   pluginMetadataSnapshot: PluginMetadataSnapshot | undefined,
+  sourcePlan?: WorkspaceSkillSourcePlan,
 ): WatchTarget[] {
-  const baseRoots = [workspaceDir, ...(executionWorkspaceDir ? [executionWorkspaceDir] : [])]
-    .flatMap((workspace) => resolveWorkspaceSkillDirectories(workspace))
-    .map(({ dir, source }) => ({ path: dir, source }));
-  baseRoots.push(...resolveWorkshopWatchRoots(config, agentId));
-  baseRoots.push({ path: path.join(CONFIG_DIR, "skills"), source: "openclaw-managed" });
-  if (isDefaultStateDir()) {
-    baseRoots.push({
-      path: path.join(os.homedir(), ".agents", "skills"),
-      source: "agents-skills-personal",
-    });
-  }
-  const extraDirsRaw = config?.skills?.load?.extraDirs ?? [];
-  const extraDirs = extraDirsRaw
-    .map((d) => normalizeOptionalString(d) ?? "")
-    .filter(Boolean)
-    .map((dir) => resolveUserPath(dir));
-  const pluginSkillRoots = pluginMetadataSnapshot
-    ? resolvePluginSkillRootsFromMetadata({
-        workspaceDir,
-        config,
-        metadataSnapshot: pluginMetadataSnapshot,
-      })
-    : resolvePluginSkillRoots({ workspaceDir, config });
-  const pluginSkillDirs = pluginSkillRoots.map((root) => root.dir);
-  const allowedSymlinkTargetRealPaths = resolveAllowedSkillSymlinkTargetRealPaths(config);
+  const { executionRoots, baseRoots, extraDirs, pluginSkillDirs, allowedSymlinkTargetRealPaths } =
+    resolveSkillsWatchSourceRoots(
+      workspaceDir,
+      config,
+      agentId,
+      executionWorkspaceDir,
+      pluginMetadataSnapshot,
+      sourcePlan,
+    );
+  baseRoots.push(...executionRoots.map(({ dir, source }) => ({ path: dir, source })));
   const signature = JSON.stringify({
     basePaths: baseRoots.map((root) => toWatchRoot(root.path)),
     extraDirs: extraDirs.map(toWatchRoot),
@@ -374,10 +357,7 @@ function shouldIgnoreSkillsWatchPath(
   if (DEFAULT_SKILLS_WATCH_IGNORED.some((re) => re.test(watchPath))) {
     return true;
   }
-  if (stats?.isDirectory?.() || stats?.isSymbolicLink?.()) {
-    return false;
-  }
-  if (!stats) {
+  if (!stats || stats.isDirectory?.() || stats.isSymbolicLink?.()) {
     return false;
   }
   if (usePolling && isSkillFileWatchPath(watchPath)) {
@@ -580,6 +560,9 @@ function createSkillsPathWatcher(target: WatchTarget): SkillsPathWatchState {
         for (const active of pathWatchers.values()) {
           void teardownSkillsPathWatcher(active);
         }
+        for (const workspaceDir of new Set(workspaceWatchOwnerDirs.values())) {
+          bumpSkillsSnapshotVersion({ workspaceDir, reason: "watch-unavailable" });
+        }
       }
       return;
     }
@@ -650,6 +633,7 @@ function disposeWorkspaceWatchState(
   watcherKey: string,
   watchTargets: readonly WatchTarget[] = workspaceWatchTargets.get(watcherKey) ?? [],
 ): void {
+  disposeRemoteSkillsWatcher(watcherKey);
   const workspaceDir = workspaceWatchOwnerDirs.get(watcherKey) ?? watcherKey;
   const hadWatchTargets = watchTargets.length > 0;
   for (const watchTarget of watchTargets) {
@@ -682,6 +666,8 @@ export function ensureSkillsWatcher(params: {
   config?: OpenClawConfig;
   agentId?: string;
   pluginMetadataSnapshot?: PluginMetadataSnapshot;
+  /** Already admitted roots, mapped into the workspace host filesystem. */
+  sourcePlan?: WorkspaceSkillSourcePlan;
 }) {
   const workspaceDir = params.workspaceDir.trim();
   if (!workspaceDir) {
@@ -704,6 +690,23 @@ export function ensureSkillsWatcher(params: {
   }
 
   workspaceWatchLastEnsuredAt.set(watcherKey, now);
+  const access = getAgentWorkspaceAccess(workspaceDir, "loadSkills");
+  let localPlan = params.sourcePlan;
+  if (access?.loadSkills) {
+    const { gatewayPlan, workspacePlan } = splitSkillSourcePlan(
+      resolveWorkspaceSkillSourcePlan(workspaceDir, params),
+    );
+    ensureRemoteSkillsWatcher({
+      watcherKey,
+      workspaceDir,
+      executionWorkspaceDir,
+      access,
+      sourcePlan: workspacePlan,
+    });
+    localPlan = gatewayPlan;
+  } else {
+    disposeRemoteSkillsWatcher(watcherKey);
+  }
   if (nativeWatchCapacityFailed) {
     // Both skill caches use this version. Rebuild at the existing preparation
     // boundary while native observation is unavailable, without reopening watches.
@@ -716,9 +719,10 @@ export function ensureSkillsWatcher(params: {
     workspaceDir,
     params.config,
     params.agentId,
-    executionWorkspaceDir,
+    access?.loadSkills ? undefined : executionWorkspaceDir,
     watcherKey,
     params.pluginMetadataSnapshot,
+    localPlan,
   );
   // resolveWatchTargets returns stable sorted order, so positional equality is intentional.
   const targetsUnchanged = areOrderedArraysEqual(
@@ -770,7 +774,7 @@ export async function closeSkillsWatchers(resetState = false): Promise<void> {
   workspaceWatchOwnerDirs.clear();
   workspaceWatchTargetCache.clear();
   workspaceWatchLastEnsuredAt.clear();
-  await Promise.all(active.map(teardownSkillsPathWatcher));
+  await Promise.all([...active.map(teardownSkillsPathWatcher), closeRemoteSkillsWatchers()]);
 }
 
 if (process.env.VITEST || process.env.NODE_ENV === "test") {

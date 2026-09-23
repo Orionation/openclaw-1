@@ -120,6 +120,11 @@ describe("test runtime prerequisites", () => {
       ["test/e2e/qa-lab/runtime/gateway-codex-delivery-cache.test.ts"],
       "private-qa",
     ],
+    [
+      "native workspace Memory and Skills workers",
+      ["extensions/file-transfer/src/workspace-service.test.ts"],
+      "runtime",
+    ],
     ["Active Memory Gateway", ["src/gateway/gateway-active-memory.test.ts"], "runtime"],
     ["concurrent Gateway streams", ["src/gateway/gateway-concurrent-streams.test.ts"], "runtime"],
     ["Gateway sidecar lifecycle", ["src/gateway/server-sidecar-retention.test.ts"], "runtime"],

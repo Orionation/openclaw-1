@@ -110,6 +110,7 @@ export abstract class MemoryManagerSourceSyncOps extends MemoryManagerSessionSyn
     this.clearMemoryRetryState();
 
     const fileEntries = await resolveMemorySourceFileEntries({
+      files: this.memoryFiles,
       workspaceDir: this.workspaceDir,
       settings: this.settings,
       concurrency: this.getIndexConcurrency(),

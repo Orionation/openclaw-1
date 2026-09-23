@@ -7,13 +7,18 @@ import { mimeTypeFromFilePath } from "@openclaw/media-core/mime";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
-import { resolvePathFromInput, toRelativeWorkspacePath } from "../../agents/path-policy.js";
+import {
+  resolvePathFromInput,
+  resolveSandboxPathMapping,
+  toRelativeWorkspacePath,
+} from "../../agents/path-policy.js";
 import {
   assertMediaNotDataUrl,
   resolveAllowedManagedMediaPath,
   resolveSandboxedMediaSource,
 } from "../../agents/sandbox-paths.js";
 import { ensureSandboxWorkspaceForSession } from "../../agents/sandbox.js";
+import type { SandboxWorkspaceAccess } from "../../agents/sandbox/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { sanitizeUntrustedFileName } from "../../infra/fs-safe-advanced.js";
@@ -110,7 +115,20 @@ function getPayloadMediaList(payload: ReplyPayload): string[] {
   return resolveSendableOutboundReplyParts(payload).mediaUrls;
 }
 
-export function createReplyMediaPathNormalizer(params: {
+type PreparedReplyMediaSource = {
+  mediaUrl: string;
+  trustedLocalMedia: boolean;
+  fileName?: string;
+  mimeType?: string;
+};
+
+/** Delivery facts only; contains no live reader or transcript changes. */
+export type PreparedReplyMedia = readonly {
+  source: string;
+  outcome: PreparedReplyMediaSource | { failure: ReplyMediaFailure };
+}[];
+
+export function createReplyMediaSourcePreparer(params: {
   cfg: OpenClawConfig;
   sessionKey?: string;
   agentId?: string;
@@ -128,7 +146,9 @@ export function createReplyMediaPathNormalizer(params: {
   sandboxContainerWorkdir?: string;
   mediaAccess?: OutboundMediaAccess;
   workspaceMediaAccess?: OutboundMediaAccess;
-}): (payload: ReplyPayload) => Promise<ReplyPayload> {
+  /** Physical remote alias of the captured logical workspace. */
+  workspaceMediaRoot?: string;
+}): (sources: readonly string[]) => Promise<PreparedReplyMedia> {
   // Prefer an explicit agentId so callers without a resolved sessionKey (e.g.
   // `openclaw agent --deliver` with `--reply-channel/--reply-to`) still get
   // the stricter agent-scoped file-read policy applied during staging.
@@ -144,11 +164,15 @@ export function createReplyMediaPathNormalizer(params: {
   });
   const explicitSandboxRoot = params.sandboxRoot?.trim();
   let sandboxWorkspacePromise:
-    | Promise<{ root: string; containerWorkdir?: string } | undefined>
+    | Promise<
+        | { root: string; containerWorkdir?: string; workspaceAccess: SandboxWorkspaceAccess }
+        | undefined
+      >
     | undefined = explicitSandboxRoot
     ? Promise.resolve({
         root: explicitSandboxRoot,
         containerWorkdir: params.sandboxContainerWorkdir,
+        workspaceAccess: params.workspaceMediaAccess?.readFile ? "ro" : "none",
       })
     : undefined;
   const persistedMediaBySource = new Map<string, Promise<{ path: string; contentType?: string }>>();
@@ -162,18 +186,26 @@ export function createReplyMediaPathNormalizer(params: {
         workspaceDir: params.workspaceDir,
       }).then((sandbox) =>
         sandbox
-          ? { root: sandbox.workspaceDir, containerWorkdir: sandbox.containerWorkdir }
+          ? {
+              root: sandbox.workspaceDir,
+              containerWorkdir: sandbox.containerWorkdir,
+              workspaceAccess: sandbox.workspaceAccess ?? "none",
+            }
           : undefined,
       );
     }
     return await sandboxWorkspacePromise;
   };
 
-  const resolveMediaAccessForSource = (media: string, sessionWorkspaceDir?: string) =>
+  const resolveMediaAccessForSource = (
+    media: string,
+    sessionWorkspaceDir?: string,
+    workspaceDir?: string,
+  ) =>
     resolveAgentScopedOutboundMediaAccess({
       cfg: params.cfg,
       agentId,
-      workspaceDir: params.workspaceDir,
+      workspaceDir: workspaceDir ?? params.workspaceDir,
       ...(sessionWorkspaceDir ? { sessionWorkspaceDir } : {}),
       mediaSources: [media],
       mediaAccess: params.mediaAccess,
@@ -193,6 +225,7 @@ export function createReplyMediaPathNormalizer(params: {
   const persistLocalReplyMedia = async (
     media: string,
     sessionWorkspaceDir?: string,
+    workspaceDir?: string,
   ): Promise<{ path: string; contentType?: string }> => {
     if (!isLikelyLocalMediaSource(media)) {
       return { path: media };
@@ -209,7 +242,7 @@ export function createReplyMediaPathNormalizer(params: {
       return await cached;
     }
     const persistPromise = resolveOutboundAttachmentFromUrl(media, maxBytes, {
-      mediaAccess: resolveMediaAccessForSource(media, sessionWorkspaceDir),
+      mediaAccess: resolveMediaAccessForSource(media, sessionWorkspaceDir, workspaceDir),
     })
       .then((saved) => ({
         ...saved,
@@ -249,7 +282,14 @@ export function createReplyMediaPathNormalizer(params: {
     fileName?: string;
     mimeType?: string;
   }> => {
-    const media = raw.trim();
+    const source = raw.trim();
+    const mapping = params.workspaceMediaRoot
+      ? resolveSandboxPathMapping(
+          [{ hostRoot: params.workspaceDir, containerRoot: params.workspaceMediaRoot }],
+          source,
+        )
+      : null;
+    const media = mapping?.hostPath ?? source;
     if (!media) {
       return { mediaUrl: media, trustedLocalMedia: false };
     }
@@ -257,7 +297,11 @@ export function createReplyMediaPathNormalizer(params: {
     if (isPassThroughRemoteMediaSource(media)) {
       return { mediaUrl: media, trustedLocalMedia: false };
     }
-    const absoluteWorkspaceMedia = resolveAbsoluteWorkspaceMedia(media);
+    const sandboxWorkspace = await resolveSandboxWorkspace();
+    const workspaceMounted = !sandboxWorkspace || sandboxWorkspace.workspaceAccess !== "none";
+    const absoluteWorkspaceMedia = workspaceMounted
+      ? resolveAbsoluteWorkspaceMedia(media)
+      : undefined;
     if (absoluteWorkspaceMedia) {
       const persisted = await persistLocalReplyMedia(absoluteWorkspaceMedia);
       return {
@@ -273,8 +317,14 @@ export function createReplyMediaPathNormalizer(params: {
       !media.startsWith("~") &&
       !path.isAbsolute(media) &&
       !WINDOWS_DRIVE_RE.test(media);
-    const sandboxWorkspace = await resolveSandboxWorkspace();
-    if (sandboxWorkspace) {
+    // Use the remote reader for relative workspace output only when sandbox policy
+    // permits workspace access; otherwise keep the sandbox's fail-closed path.
+    const useRemoteWorkspace =
+      workspaceMounted &&
+      isRelativeLocalMedia &&
+      params.workspaceMediaRoot &&
+      params.workspaceMediaAccess?.readFile;
+    if (sandboxWorkspace && !useRemoteWorkspace) {
       let sandboxResolvedMedia: string;
       try {
         sandboxResolvedMedia = await resolveSandboxedMediaSource({
@@ -291,7 +341,11 @@ export function createReplyMediaPathNormalizer(params: {
         }
         throw err;
       }
-      const persisted = await persistLocalReplyMedia(sandboxResolvedMedia, sandboxWorkspace.root);
+      const persisted = await persistLocalReplyMedia(
+        sandboxResolvedMedia,
+        sandboxWorkspace.root,
+        workspaceMounted ? undefined : sandboxWorkspace.root,
+      );
       return {
         mediaUrl: persisted.path,
         trustedLocalMedia: true,
@@ -326,73 +380,101 @@ export function createReplyMediaPathNormalizer(params: {
     };
   };
 
-  return async (payload) => {
-    const mediaList = getPayloadMediaList(payload);
-    if (mediaList.length === 0) {
-      return payload;
-    }
-
-    const normalizedMedia: string[] = [];
-    const normalizedAttachments: NonNullable<ReplyPayload["attachments"]> = [];
-    const seen = new Set<string>();
-    let hasTrustedLocalMedia = payload.trustedLocalMedia === true;
-    const mediaFailures: ReplyMediaFailure[] = [];
-    for (const [mediaIndex, media] of mediaList.entries()) {
-      let normalized: Awaited<ReturnType<typeof normalizeMediaSource>>;
+  return async (sources) => {
+    const prepared: Array<PreparedReplyMedia[number]> = [];
+    for (const [index, source] of sources.entries()) {
       try {
-        normalized = await normalizeMediaSource(media);
-      } catch (err) {
-        mediaFailures.push(createReplyMediaFailure(media, mediaIndex, err));
-        logVerbose(`dropping blocked reply media ${media}: ${String(err)}`);
-        continue;
+        prepared.push({ source, outcome: await normalizeMediaSource(source) });
+      } catch (error) {
+        prepared.push({
+          source,
+          outcome: { failure: createReplyMediaFailure(source, index, error) },
+        });
+        logVerbose(`dropping blocked reply media ${source}: ${String(error)}`);
       }
-      if (!normalized.mediaUrl || seen.has(normalized.mediaUrl)) {
-        continue;
-      }
-      seen.add(normalized.mediaUrl);
-      normalizedMedia.push(normalized.mediaUrl);
-      hasTrustedLocalMedia ||= normalized.trustedLocalMedia;
-      const existingAttachment = payload.attachments?.[mediaIndex] ?? {};
-      normalizedAttachments.push({
-        ...existingAttachment,
-        ...(normalized.fileName && !existingAttachment.name ? { name: normalized.fileName } : {}),
-        ...(normalized.mimeType && !existingAttachment.mimeType
-          ? { mimeType: normalized.mimeType }
-          : {}),
-        ...(normalized.trustedLocalMedia ? { trustedLocalMedia: true } : {}),
-      });
     }
+    return prepared;
+  };
+}
 
-    const text = appendReplyMediaFailures(payload.text, mediaFailures);
-    const previousMediaFailures = getReplyPayloadMetadata(payload)?.assistantMediaFailures ?? [];
-    const assistantMediaFailures = [...previousMediaFailures, ...mediaFailures];
-
-    if (normalizedMedia.length === 0) {
-      const normalized = copyReplyPayloadMetadata(payload, {
-        ...payload,
-        text,
-        mediaUrl: undefined,
-        mediaUrls: undefined,
-      });
-      return mediaFailures.length === 0
-        ? normalized
-        : setReplyPayloadMetadata(normalized, { assistantMediaFailures });
+/** Applies already-prepared bytes after final answer selection, without reopening files. */
+export function applyPreparedReplyMedia(
+  payload: ReplyPayload,
+  prepared: PreparedReplyMedia,
+): ReplyPayload {
+  const mediaList = getPayloadMediaList(payload);
+  if (!mediaList.length || !prepared.length) {
+    return payload;
+  }
+  const bySource = new Map(prepared.map(({ source, outcome }) => [source, outcome]));
+  const normalizedMedia: string[] = [];
+  const normalizedAttachments: NonNullable<ReplyPayload["attachments"]> = [];
+  const seen = new Set<string>();
+  let hasTrustedLocalMedia = payload.trustedLocalMedia === true;
+  const mediaFailures: ReplyMediaFailure[] = [];
+  for (const [mediaIndex, media] of mediaList.entries()) {
+    const normalized: PreparedReplyMedia[number]["outcome"] = bySource.get(media) ?? {
+      mediaUrl: media,
+      trustedLocalMedia: false,
+    };
+    if ("failure" in normalized) {
+      mediaFailures.push(normalized.failure);
+      continue;
     }
+    if (!normalized.mediaUrl || seen.has(normalized.mediaUrl)) {
+      continue;
+    }
+    seen.add(normalized.mediaUrl);
+    normalizedMedia.push(normalized.mediaUrl);
+    hasTrustedLocalMedia ||= normalized.trustedLocalMedia;
+    const existingAttachment = payload.attachments?.[mediaIndex] ?? {};
+    normalizedAttachments.push({
+      ...existingAttachment,
+      ...(normalized.fileName && !existingAttachment.name ? { name: normalized.fileName } : {}),
+      ...(normalized.mimeType && !existingAttachment.mimeType
+        ? { mimeType: normalized.mimeType }
+        : {}),
+      ...(normalized.trustedLocalMedia ? { trustedLocalMedia: true } : {}),
+    });
+  }
 
+  const text = appendReplyMediaFailures(payload.text, mediaFailures);
+  const previousMediaFailures = getReplyPayloadMetadata(payload)?.assistantMediaFailures ?? [];
+  const assistantMediaFailures = [...previousMediaFailures, ...mediaFailures];
+
+  if (normalizedMedia.length === 0) {
     const normalized = copyReplyPayloadMetadata(payload, {
       ...payload,
       text,
-      mediaUrl: normalizedMedia[0],
-      mediaUrls: normalizedMedia,
-      ...(normalizedAttachments.some((attachment) => Object.keys(attachment).length > 0)
-        ? { attachments: normalizedAttachments }
-        : {}),
-      ...(hasTrustedLocalMedia ? { trustedLocalMedia: true } : {}),
+      mediaUrl: undefined,
+      mediaUrls: undefined,
     });
     return mediaFailures.length === 0
       ? normalized
       : setReplyPayloadMetadata(normalized, { assistantMediaFailures });
-  };
+  }
+
+  const normalized = copyReplyPayloadMetadata(payload, {
+    ...payload,
+    text,
+    mediaUrl: normalizedMedia[0],
+    mediaUrls: normalizedMedia,
+    ...(normalizedAttachments.some((attachment) => Object.keys(attachment).length > 0)
+      ? { attachments: normalizedAttachments }
+      : {}),
+    ...(hasTrustedLocalMedia ? { trustedLocalMedia: true } : {}),
+  });
+  return mediaFailures.length === 0
+    ? normalized
+    : setReplyPayloadMetadata(normalized, { assistantMediaFailures });
+}
+
+export function createReplyMediaPathNormalizer(
+  params: Parameters<typeof createReplyMediaSourcePreparer>[0],
+): (payload: ReplyPayload) => Promise<ReplyPayload> {
+  const prepare = createReplyMediaSourcePreparer(params);
+  return async (payload) =>
+    applyPreparedReplyMedia(payload, await prepare(getPayloadMediaList(payload)));
 }
 
 export type ReplyMediaContext = {

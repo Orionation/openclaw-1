@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { ensureSandboxWorkspaceForSession } from "../../agents/sandbox/context.js";
+import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import {
   SANDBOX_MEDIA_MAX_BYTES,
   stageSandboxMedia,
@@ -92,6 +93,9 @@ async function prestageMediaPathOffloads(params: {
 
   try {
     const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.agentId);
+    if (getAgentWorkspaceAccess(workspaceDir, "prepareTurnAttachments")?.prepareTurnAttachments) {
+      return refsByManagedPath(mediaPathRefs);
+    }
     const sandbox = await ensureSandboxWorkspaceForSession({
       config: params.cfg,
       agentId: params.agentId,
