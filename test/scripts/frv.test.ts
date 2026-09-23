@@ -1261,7 +1261,7 @@ describe("FRV per-child failed-job reruns", () => {
   function fixture(parentConclusion: string | null = "failure") {
     const first = child("normalCi", "101");
     const second = child("pluginPrerelease", "202");
-    const childRuns = new Map([
+    const childRuns = new Map<string, { attempt: number; conclusion: string | null }>([
       ["101", { attempt: 1, conclusion: "failure" }],
       ["202", { attempt: 1, conclusion: "failure" }],
     ]);
