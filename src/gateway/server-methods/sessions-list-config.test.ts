@@ -12,6 +12,7 @@ import * as history from "../../config/sessions/session-transcript-worker-runtim
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import type { OperatorScope } from "../operator-scopes.js";
 import { retainSessionListForegroundWork } from "../session-projection-work.js";
 import { bindSessionRowProjection } from "../session-row-projection-access.js";
 import { createSessionRowProjection } from "../session-row-projection.js";
@@ -96,7 +97,7 @@ it("retains session facts on identity-scope changes and refreshes changes that a
         }
         return result;
       };
-      for (const scopes of [["operator.read"], ["operator.admin"]]) {
+      for (const scopes of [["operator.read"], ["operator.admin"]] satisfies OperatorScope[][]) {
         await publish(
           { ...cfg, gateway: { auth: { identityScopes: { "viewer@example.test": scopes } } } },
           false,
@@ -143,7 +144,7 @@ it("retains session facts on identity-scope changes and refreshes changes that a
           new Map([["models.providers.unit.apiKey", "UNIT_KEY"]]),
         ),
       ].entries()) {
-        const next = {
+        const next: OpenClawConfig = {
           ...cfg,
           gateway: {
             auth: {
@@ -158,7 +159,7 @@ it("retains session facts on identity-scope changes and refreshes changes that a
       }
 
       reads.length = 0;
-      const forced = {
+      const forced: OpenClawConfig = {
         ...cfg,
         gateway: { auth: { identityScopes: { "viewer@example.test": ["operator.admin"] } } },
       };
