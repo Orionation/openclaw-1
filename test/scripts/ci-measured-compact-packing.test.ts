@@ -105,7 +105,7 @@ describe("measured CI row packing", () => {
 
   const measuredSerialFixture = JSON.parse(
     readFileSync(new URL("./fixtures/ci-serial-compact-jobs.json", import.meta.url), "utf8"),
-  ) as { jobs: CompactNodeTestShard[] };
+  ) as { jobs: CompactNodeTestShard[]; largeJob: CompactNodeTestShard };
   const measuredSerialOptions = {
     ...measuredPackingOptions,
     compactMode: "push" as const,
@@ -198,6 +198,125 @@ describe("measured CI row packing", () => {
     before[0]!.groups[1]!.includePatterns!.push("src/cli/unmeasured-fixture.test.ts");
     expect(rebalanceMeasuredHybridJobs(before, measuredSerialOptions)).toEqual(before);
   });
+
+  function unmeasuredSerialJobs(runner = EXTRA_LARGE_NODE_TEST_RUNNER) {
+    const jobs = structuredClone(measuredSerialFixture.jobs);
+    for (const job of jobs) {
+      job.runner = runner;
+      job.groups[0]!.includePatterns!.push("src/cli/unmeasured-fixture.test.ts");
+    }
+    return jobs;
+  }
+
+  it.each([
+    { compactMode: "push" as const, prices: [705] },
+    { compactMode: "pull-request" as const, prices: [275, 490] },
+  ])(
+    "reserves canonical pricing headroom inside the $compactMode budget",
+    ({ compactMode, prices }) => {
+      const before = unmeasuredSerialJobs();
+      const after = rebalanceMeasuredHybridJobs(before, {
+        ...measuredSerialOptions,
+        compactMode,
+        estimateSerialGroup: () => 170,
+      });
+      // Three 170s children cost 215s each after headroom and admission, plus one setup per row.
+      expect(after.map((job) => job.predictedSeconds).toSorted((a, b) => a! - b!)).toEqual(prices);
+      expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(before));
+      expect(
+        after.every(
+          (job) => job.planConcurrency === 1 && job.runner === EXTRA_LARGE_NODE_TEST_RUNNER,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("does not use canonical fallback for an unmeasured eight-class row", () => {
+    const before = unmeasuredSerialJobs(DEFAULT_NODE_TEST_RUNNER);
+    const estimateSerialGroup = vi.fn(() => 1);
+    expect(
+      rebalanceMeasuredHybridJobs(before, { ...measuredSerialOptions, estimateSerialGroup }),
+    ).toEqual(before);
+    expect(estimateSerialGroup).not.toHaveBeenCalled();
+  });
+
+  it("prefers the native large-runner child price over its canonical fallback", () => {
+    const native = structuredClone(measuredSerialFixture.largeJob);
+    const unmeasured = unmeasuredSerialJobs()[0]!;
+    unmeasured.timeoutMinutes = native.timeoutMinutes;
+    const before = [native, unmeasured];
+    const after = rebalanceMeasuredHybridJobs(before, {
+      ...measuredSerialOptions,
+      estimateSerialGroup: (group) => (group.shard_name === "agentic-cli" ? 1_000 : 170),
+    });
+    expect(after).toHaveLength(1);
+    expect(after[0]!.predictedSeconds).toBe(505);
+    expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(before));
+  });
+
+  it("moves only the inherited two-worker cap onto children when sharing a default-capacity row", () => {
+    const before = unmeasuredSerialJobs();
+    before[0]!.env = { OPENCLAW_VITEST_MAX_WORKERS: "2" };
+    before[0]!.groups[0]!.env = { FIXTURE_POLICY: "keep" };
+    before[0]!.groups[0]!.fallbackMaxWorkers = 2;
+    before[0]!.groups[0]!.minTotalMemoryBytes = 28 * 1024 ** 3;
+    before[1]!.env = { OPENCLAW_VITEST_MAX_WORKERS: "2" };
+    before[1]!.groups[0]!.env = { OPENCLAW_VITEST_MAX_WORKERS: "1" };
+    before[2]!.groups[0]!.env = { OPENCLAW_VITEST_MAX_WORKERS: "4" };
+    const original = structuredClone(before);
+    const expected = structuredClone(before);
+    expected[0]!.groups[0]!.env = { FIXTURE_POLICY: "keep", OPENCLAW_VITEST_MAX_WORKERS: "2" };
+    const after = rebalanceMeasuredHybridJobs(before, {
+      ...measuredSerialOptions,
+      estimateSerialGroup: () => 10,
+    });
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({
+      runner: EXTRA_LARGE_NODE_TEST_RUNNER,
+      planConcurrency: 1,
+      predictedSeconds: 105,
+    });
+    expect(after[0]!.env).toBeUndefined();
+    expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(expected));
+    expect(before).toEqual(original);
+  });
+
+  it.each<Record<string, string>>([
+    { OPENCLAW_VITEST_MAX_WORKERS: "2", FIXTURE_POLICY: "keep" },
+    { OPENCLAW_VITEST_MAX_WORKERS: "3" },
+  ])("retains a separate cohort for job environment %j", (env) => {
+    const before = unmeasuredSerialJobs().slice(0, 2);
+    before[0]!.env = env;
+    expect(
+      rebalanceMeasuredHybridJobs(before, {
+        ...measuredSerialOptions,
+        estimateSerialGroup: () => 10,
+      }),
+    ).toEqual(before);
+  });
+
+  it.each(["build", "dist", "parallel"] as const)(
+    "excludes %s rows from canonical serial packing",
+    (kind) => {
+      const before = unmeasuredSerialJobs();
+      for (const job of before) {
+        if (kind === "build") {
+          job.pretestBuildMode = "runtime";
+          job.groups[0]!.pretestBuildMode = "runtime";
+        } else if (kind === "dist") {
+          job.requiresDist = true;
+          job.groups[0]!.requiresDist = true;
+        } else {
+          job.planConcurrency = 2;
+        }
+      }
+      const estimateSerialGroup = vi.fn(() => 10);
+      expect(
+        rebalanceMeasuredHybridJobs(before, { ...measuredSerialOptions, estimateSerialGroup }),
+      ).toEqual(before);
+      expect(estimateSerialGroup).not.toHaveBeenCalled();
+    },
+  );
 
   it("packs the native-wall fixture into four while preserving every child and its supplied prices", () => {
     const before = measuredToolingFixture();

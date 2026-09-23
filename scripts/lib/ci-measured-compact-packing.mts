@@ -196,7 +196,12 @@ function executedSerialGroupFingerprint(
 
 function packMeasuredSerialJobs(
   jobs: CompactNodeTestShard[],
-  options: { runner: string; largeRunner?: string; compactMode?: "push" | "pull-request" },
+  options: {
+    runner: string;
+    largeRunner?: string;
+    compactMode?: "push" | "pull-request";
+    estimateSerialGroup?: (group: NodeTestShardGroup) => number;
+  },
 ): CompactNodeTestShard[] {
   if (!options.compactMode) {
     return jobs;
@@ -204,7 +209,10 @@ function packMeasuredSerialJobs(
   const maxJobSeconds = options.compactMode === "push" ? 720 : 600;
   const observations = measuredSerialGroupSeconds[options.compactMode];
   type PricedGroup = { group: NodeTestShardGroup; seconds: number };
-  const pools = new Map<string, { jobs: CompactNodeTestShard[]; groups: PricedGroup[] }>();
+  const pools = new Map<
+    string,
+    { jobs: CompactNodeTestShard[]; groups: PricedGroup[]; env?: Record<string, string> }
+  >();
   for (const job of jobs) {
     if (
       job.planConcurrency !== 1 ||
@@ -215,9 +223,35 @@ function packMeasuredSerialJobs(
     ) {
       continue;
     }
+    const transferWorkerCap =
+      job.env?.OPENCLAW_VITEST_MAX_WORKERS === "2" && Object.keys(job.env).length === 1;
     const priced = job.groups.flatMap((group) => {
-      const seconds = observations[executedSerialGroupFingerprint(job, group)];
-      return seconds === undefined ? [] : [{ group, seconds }];
+      const nativeSeconds = observations[executedSerialGroupFingerprint(job, group)];
+      const canonicalSeconds =
+        job.runner === options.largeRunner ? options.estimateSerialGroup?.(group) : undefined;
+      // New files reshuffle complete stripes. Retain the canonical estimator
+      // with pricing headroom instead of requiring an old selector generation.
+      const seconds =
+        nativeSeconds ??
+        (canonicalSeconds === undefined ? undefined : Math.ceil(canonicalSeconds * 1.25) + 2);
+      return seconds === undefined
+        ? []
+        : [
+            {
+              group: transferWorkerCap
+                ? {
+                    ...group,
+                    env: {
+                      ...group.env,
+                      OPENCLAW_VITEST_MAX_WORKERS: String(
+                        Math.min(2, Number(group.env?.OPENCLAW_VITEST_MAX_WORKERS ?? 2)),
+                      ),
+                    },
+                  }
+                : group,
+              seconds,
+            },
+          ];
     });
     if (
       priced.length !== job.groups.length ||
@@ -225,10 +259,11 @@ function packMeasuredSerialJobs(
     ) {
       continue;
     }
-    // Preserve the executor's job-level intersection and deadline. Every
-    // child remains an intact process; no formerly serial plans overlap.
-    const key = JSON.stringify([job.runner, job.env, job.timeoutMinutes]);
-    const pool = pools.get(key) ?? { jobs: [], groups: [] };
+    // A two-worker row can share a default-capacity host after each child
+    // carries that same ceiling. Other environment and deadline cohorts stay separate.
+    const env = transferWorkerCap ? undefined : job.env;
+    const key = JSON.stringify([job.runner, env, job.timeoutMinutes]);
+    const pool = pools.get(key) ?? { jobs: [], groups: [], env };
     pool.jobs.push(job);
     pool.groups.push(...priced);
     pools.set(key, pool);
@@ -261,6 +296,7 @@ function packMeasuredSerialJobs(
         replacements.set(job, {
           ...job,
           groups: bin.groups,
+          env: pool.env,
           predictedSeconds: bin.seconds + FIXED_JOB_SECONDS,
         });
       }
@@ -276,6 +312,7 @@ export function rebalanceMeasuredHybridJobs(
     runner: string;
     largeRunner?: string;
     compactMode?: "push" | "pull-request";
+    estimateSerialGroup?: (group: NodeTestShardGroup) => number;
     estimateGroup: (group: NodeTestShardGroup) => { seconds: number; complete: boolean };
     canShare: (groups: NodeTestShardGroup[]) => boolean;
   },

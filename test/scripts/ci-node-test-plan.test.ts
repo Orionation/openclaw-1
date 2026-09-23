@@ -284,13 +284,16 @@ function usesParallelPacking(job: CompactNodeTestShard | undefined) {
     (job?.planConcurrency === 1 &&
       job.runner === EXTRA_LARGE_NODE_TEST_RUNNER &&
       job.groups.length > 1 &&
-      job.groups.some(
-        (group) =>
-          (group.fallbackMaxWorkers === 2 &&
-            (group.configs.some(isExclusiveCiTestConfig) ||
-              fileParallelAgentGroupNames.has(group.shard_name.replace(/-hosted-\d+$/u, "")))) ||
-          group.configs.includes("test/vitest/vitest.commands.config.ts"),
-      ))
+      (job.groups.every((group) =>
+        ["1", "2"].includes(group.env?.OPENCLAW_VITEST_MAX_WORKERS ?? ""),
+      ) ||
+        job.groups.some(
+          (group) =>
+            (group.fallbackMaxWorkers === 2 &&
+              (group.configs.some(isExclusiveCiTestConfig) ||
+                fileParallelAgentGroupNames.has(group.shard_name.replace(/-hosted-\d+$/u, "")))) ||
+            group.configs.includes("test/vitest/vitest.commands.config.ts"),
+        )))
   );
 }
 function isNumberedToolingGroup(group: { shard_name: string }) {
@@ -633,7 +636,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     try {
       const after = createNodeTestShardBundles(options);
       const before = expectDefined(admission, "measured packing admission");
-      expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(before));
+      expect(effectiveMeasuredGroups(after)).toEqual(effectiveMeasuredGroups(before));
       for (const job of after) {
         const previous = before.find((entry) => entry.checkName === job.checkName);
         if (isDeepStrictEqual(job.groups, previous?.groups)) {
@@ -652,7 +655,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             "original serial child owner",
           );
           expect(job.runner).toBe(owner.runner);
-          expect(job.env).toEqual(owner.env);
+          const nonWorkerEnv = (env: CompactNodeTestShard["env"]) =>
+            env?.OPENCLAW_VITEST_MAX_WORKERS === "2" && Object.keys(env).length === 1
+              ? undefined
+              : env;
+          expect(nonWorkerEnv(job.env)).toEqual(nonWorkerEnv(owner.env));
           expect(job.timeoutMinutes).toBe(owner.timeoutMinutes);
         }
       }
@@ -728,8 +735,21 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     toolingTailJobs: CompactNodeTestShard[];
   };
 
-  const sortedMeasuredGroups = (jobs: CompactNodeTestShard[]) =>
-    jobs.flatMap((job) => job.groups).toSorted((a, b) => a.shard_name.localeCompare(b.shard_name));
+  const effectiveMeasuredGroups = (jobs: CompactNodeTestShard[]) =>
+    jobs
+      .flatMap((job) =>
+        job.groups.map((group) => {
+          const env = Object.assign({}, group.env);
+          const caps = [job.env?.OPENCLAW_VITEST_MAX_WORKERS, env.OPENCLAW_VITEST_MAX_WORKERS]
+            .filter((value): value is string => value !== undefined)
+            .map(Number);
+          if (caps.length > 0) {
+            env.OPENCLAW_VITEST_MAX_WORKERS = String(Math.min(...caps));
+          }
+          return Object.assign({}, group, { env: Object.keys(env).length ? env : undefined });
+        }),
+      )
+      .toSorted((a, b) => a.shard_name.localeCompare(b.shard_name));
 
   it("counts every placement stage against the compact cap", () => {
     const options = {
@@ -6198,8 +6218,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       const changedOptions = { ...options, changedPaths: STORE_ALIAS_CHANGED_PATHS };
       // Each input has its own admission before runtime placement materializes caps.
       const observations = vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
-      const beforeAdmission = createNodeTestShardBundles(options);
-      const afterAdmission = createNodeTestShardBundles(changedOptions);
+      const beforeAdmission =
+        runnerBackend === "hybrid"
+          ? createHybridPlanWithAdmissionProof({ ...options, runnerBackend })
+          : createNodeTestShardBundles(options);
+      const afterAdmission =
+        runnerBackend === "hybrid"
+          ? createHybridPlanWithAdmissionProof({ ...changedOptions, runnerBackend })
+          : createNodeTestShardBundles(changedOptions);
       observations.mockRestore();
       const before = getCommittedCompactPlan(options.compactMode, runnerBackend);
       const after = createNodeTestShardBundles(changedOptions);
@@ -6309,12 +6335,15 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       const inheritedGroupsFor = (admission: typeof before) => {
         const inherited = new Map(
           admission.flatMap((job) =>
-            job.planConcurrency === 2
+            job.planConcurrency === 2 ||
+            (job.planConcurrency === 1 &&
+              job.env?.OPENCLAW_VITEST_MAX_WORKERS === "2" &&
+              Object.keys(job.env).length === 1)
               ? job.groups
                   .filter(
                     (group) =>
                       group.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined &&
-                      group.fallbackMaxWorkers === undefined,
+                      (job.planConcurrency === 1 || group.fallbackMaxWorkers === undefined),
                   )
                   .map((group): [string, Group] => [group.shard_name, group])
               : [],
@@ -6532,7 +6561,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expectTimingFamilies(after, afterInherited);
       expect(policies(after, afterInherited)).toEqual(policies(before, beforeInherited));
       if (runnerBackend === "hybrid") {
-        const serial = structuredClone(before);
+        const serial = structuredClone(beforeAdmission);
+        const serialPolicies = policies(serial, beforeInherited);
         const serialGroup = expectDefined(
           serial
             .filter(
@@ -6543,9 +6573,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           "already-serial group using its job worker cap",
         );
         serialGroup.env = { ...serialGroup.env, OPENCLAW_VITEST_MAX_WORKERS: "2" };
-        expect(() =>
-          expect(policies(serial, beforeInherited)).toEqual(policies(before, beforeInherited)),
-        ).toThrow();
+        expect(policies(serial, beforeInherited)).toEqual(serialPolicies);
+        expectTimingFamilies(serial, beforeInherited);
+        serialGroup.env.OPENCLAW_VITEST_MAX_WORKERS = "1";
+        expect(() => expect(policies(serial, beforeInherited)).toEqual(serialPolicies)).toThrow();
         const promoted = structuredClone(before);
         const recipient = expectDefined(
           promoted.find(
@@ -6726,6 +6757,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
                 shard.runner === EXTRA_LARGE_NODE_TEST_RUNNER)),
         ),
       ).toBe(true);
+      for (const shard of after.filter((job) => job.groups.length > 10)) {
+        expect(shard.predictedSeconds).toBeLessThanOrEqual(600);
+      }
       expect(after.length).toBeLessThanOrEqual(90);
     },
   );

@@ -77,5 +77,25 @@
       "planConcurrency": 1,
       "predictedSeconds": 35
     }
-  ]
+  ],
+  "largeJob": {
+    "checkName": "checks-node-compact-small-27",
+    "groups": [
+      {
+        "configs": [
+          "test/vitest/vitest.cli.config.ts"
+        ],
+        "requiresDist": false,
+        "runner": "blacksmith-4vcpu-ubuntu-2404",
+        "shard_name": "agentic-cli",
+        "fallbackMaxWorkers": 2
+      }
+    ],
+    "requiresDist": false,
+    "runner": "blacksmith-32vcpu-ubuntu-2404",
+    "shardName": "compact-small-27",
+    "timeoutMinutes": 120,
+    "planConcurrency": 1,
+    "predictedSeconds": 518
+  }
 }

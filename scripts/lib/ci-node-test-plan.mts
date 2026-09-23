@@ -4647,6 +4647,7 @@ function createCompactNodeTestShardBundles(
           runner: DEFAULT_NODE_TEST_RUNNER,
           largeRunner: EXTRA_LARGE_NODE_TEST_RUNNER,
           compactMode,
+          estimateSerialGroup: estimateStripeSeconds,
           estimateGroup: (group) => ({
             seconds: estimateParallelToolingSeconds(
               group,
