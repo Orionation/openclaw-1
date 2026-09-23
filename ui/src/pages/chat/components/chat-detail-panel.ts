@@ -20,7 +20,7 @@ import { formatUiError } from "../../../lib/format-error.ts";
 import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
 import { AttachmentDownloadController } from "./chat-attachment-download-controller.ts";
 import { FileCopyController } from "./chat-file-copy-controller.ts";
-import { readFileDraft, setFileDraft } from "./chat-file-drafts.ts";
+import { captureFileEditorDraft, readFileDraft, setFileDraft } from "./chat-file-drafts.ts";
 import { FileHtmlPreviewController } from "./chat-html-preview.ts";
 import { releaseChatMediaResourceSubscriber } from "./chat-message-media.ts";
 import type {
@@ -287,17 +287,17 @@ class ChatDetailPanel extends OpenClawLightDomElement {
         this.fileEditor = editor;
         this.fileDraftContent = null;
         editor.onDocChanged((nextContent) => {
-          const dirty = nextContent !== this.fileSavedContent;
-          if (dirty !== this.fileDirty) {
-            this.fileDirty = dirty;
+          const draft = captureFileEditorDraft(current, {
+            editing: this.fileEditing,
+            content: nextContent,
+            dirty: !editor.contentEquals(this.fileSavedContent),
+            expectedHash: this.fileHash,
+          });
+          if (!draft) {
+            return;
           }
-          if (!dirty && this.visibleContent?.kind === "file") {
-            this.fileHash = this.visibleContent.edit?.hash ?? "";
-          }
-          setFileDraft(
-            current,
-            dirty ? { content: nextContent, expectedHash: this.fileHash } : null,
-          );
+          this.fileDirty = draft.dirty;
+          this.fileHash = draft.expectedHash;
           if (this.fileSaveNotice?.kind === "error") {
             this.fileSaveNotice = null;
           }
@@ -493,7 +493,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     const draftContent = this.currentFileText();
     this.fileSavedContent = nextContent;
     this.fileHash = hash;
-    this.fileDirty = draftContent !== nextContent;
+    this.fileDirty = !(this.fileEditor?.contentEquals(nextContent) ?? draftContent === nextContent);
     this.fileDraftContent = !this.fileEditor && this.fileDirty ? draftContent : null;
     setFileDraft(content, this.fileDirty ? { content: draftContent, expectedHash: hash } : null);
     this.fileSaveNotice = null;
