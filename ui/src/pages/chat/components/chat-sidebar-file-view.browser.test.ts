@@ -4,6 +4,7 @@ import "../../../styles.css";
 import "../../../styles/chat.ts";
 import "../../../styles/chat/side-panel.css";
 import "./chat-sidebar.ts";
+import { readFileDraft, setFileDraft } from "./chat-file-drafts.ts";
 
 // The root jsdom ui shard also collects *.browser.test.ts files; CodeMirror
 // needs a real DOM, so this suite only runs in the checks-ui Chromium project.
@@ -45,8 +46,11 @@ type DetailPanel = HTMLElement & {
 };
 
 const mounted: HTMLElement[] = [];
+const files: FileSidebarContent[] = [];
 
 async function mountFile(content: FileSidebarContent, width?: number): Promise<DetailPanel> {
+  content.draftKey ??= crypto.randomUUID();
+  files.push(content);
   const panel = document.createElement("openclaw-chat-detail-panel") as DetailPanel;
   panel.content = content;
   if (width === undefined) {
@@ -80,6 +84,9 @@ function button(panel: DetailPanel, label: string): HTMLButtonElement {
 afterEach(() => {
   for (const panel of mounted.splice(0)) {
     panel.remove();
+  }
+  for (const file of files.splice(0)) {
+    setFileDraft(file, null);
   }
 });
 
@@ -178,6 +185,7 @@ describe.runIf(browserMode)("chat file editor", () => {
     await expect.poll(() => lineIndexes(".file-view__line--current")).toEqual([matchLines[1]]);
     await userEvent.click(button(panel, "Previous match"));
     await expect.poll(() => lineIndexes(".file-view__line--current")).toEqual([matchLines[0]]);
+    expect(readFileDraft(panel.content)).toBeUndefined();
   });
 
   it("closes file search from every search control and preserves keyboard navigation", async () => {
@@ -429,35 +437,39 @@ describe.runIf(browserMode)("chat file editor", () => {
     expect(button(panel, "Save").disabled).toBe(true);
   });
 
-  it("drops edit mode when a conflict reload returns non-editable content", async () => {
-    const save = vi.fn().mockResolvedValue({ ok: false, code: "conflict" });
-    const fetchLatest = vi.fn().mockResolvedValue({
-      content: "mixed\r\nendings\nnow",
-      hash: "hash-2",
-      editable: false,
-    });
-    const panel = await mountFile({
-      kind: "file",
-      path: "notes.txt",
-      name: "notes.txt",
-      content: "before",
-      edit: { hash: "hash-1", save, fetchLatest },
-    });
+  it.each(["mixed\r\nendings\nnow", "mixed\nendings\r\nnow"])(
+    "drops edit mode and its draft when a conflict reload returns non-editable %j",
+    async (content) => {
+      const save = vi.fn().mockResolvedValue({ ok: false, code: "conflict" });
+      const fetchLatest = vi.fn().mockResolvedValue({
+        content,
+        hash: "hash-2",
+        editable: false,
+      });
+      const panel = await mountFile({
+        kind: "file",
+        path: "notes.txt",
+        name: "notes.txt",
+        content: "before",
+        edit: { hash: "hash-1", save, fetchLatest },
+      });
 
-    await userEvent.click(button(panel, "Edit file"));
-    await userEvent.fill(panel.querySelector<HTMLElement>(".cm-content")!, "local");
-    await userEvent.click(button(panel, "Save"));
-    await expect.poll(() => panel.querySelector('[role="alert"]')).not.toBeNull();
-    await userEvent.click(button(panel, "Reload"));
+      await userEvent.click(button(panel, "Edit file"));
+      await userEvent.fill(panel.querySelector<HTMLElement>(".cm-content")!, "local");
+      await userEvent.click(button(panel, "Save"));
+      await expect.poll(() => panel.querySelector('[role="alert"]')).not.toBeNull();
+      await userEvent.click(button(panel, "Reload"));
 
-    await expect.poll(() => panel.querySelector(".cm-content")?.textContent).toContain("mixed");
-    expect(panel.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("false");
-    expect(
-      Array.from(panel.querySelectorAll("button")).some(
-        (candidate) => candidate.getAttribute("aria-label") === "Edit file",
-      ),
-    ).toBe(false);
-  });
+      await expect.poll(() => panel.querySelector(".cm-content")?.textContent).toContain("mixed");
+      expect(panel.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("false");
+      expect(
+        Array.from(panel.querySelectorAll("button")).some(
+          (candidate) => candidate.getAttribute("aria-label") === "Edit file",
+        ),
+      ).toBe(false);
+      expect(readFileDraft(panel.content)).toBeUndefined();
+    },
+  );
 
   it("makes the editor read-only while reloading a conflict", async () => {
     let finishReload:
