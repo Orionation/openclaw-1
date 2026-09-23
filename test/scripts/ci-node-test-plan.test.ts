@@ -3846,7 +3846,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       toolingGroups.every((group) => group.configs[0] === "test/vitest/vitest.tooling.config.ts"),
     ).toBe(true);
     expect(new Set(toolingFiles).size).toBe(toolingFiles.length);
-    expect(toolingFiles.toSorted((a, b) => a.localeCompare(b))).toEqual(listAllToolingTestFiles());
+    const allToolingFiles = listAllToolingTestFiles();
+    expect(toolingFiles.toSorted((a, b) => a.localeCompare(b))).toEqual(
+      allToolingFiles.filter((file) => !isCiProofTestFile(file)),
+    );
+    expect(
+      base
+        .filter((shard) => shard.configs[0] === "test/vitest/vitest.tooling.config.ts")
+        .flatMap((shard) => shard.includePatterns ?? [])
+        .toSorted((a, b) => a.localeCompare(b)),
+    ).toEqual(allToolingFiles);
   }
   it.each(plannerHosts)(
     "preserves coverage and execution policies with committed compact measurements ($label)",
@@ -4060,10 +4069,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   });
 
   it("keeps lifecycle proofs on main while excluding PR and manual PR-fallback plans", () => {
-    const proofFiles = [
-      "src/commands/doctor-config-preflight.refusal.process.test.ts",
-      "src/gateway/server.codex-failure-recovery.test.ts",
-    ];
+    const proofFiles = ["src/gateway/server.codex-failure-recovery.test.ts"];
     const files = (mode: "push" | "pull-request") =>
       getCommittedCompactPlan(mode).flatMap((shard) =>
         shard.groups.flatMap((group) => group.includePatterns ?? []),
@@ -4105,6 +4111,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           plan.flatMap((shard) => shard.groups.flatMap((group) => group.includePatterns ?? []));
         const beforeFiles = files(before);
         const afterFiles = files(after);
+        const fullCommandTimingParents = new Set(
+          before.flatMap((shard) =>
+            shard.groups
+              .filter((group) => group.configs.includes("test/vitest/vitest.commands.config.ts"))
+              .map((group) => {
+                const key = group.timing_key ?? group.shard_name;
+                return parseCompactSplitTimingKey(key)?.parentShardName ?? key;
+              }),
+          ),
+        );
         expect(beforeFiles.filter((file) => !afterFiles.includes(file)).toSorted()).toEqual(
           [...RELEASE_ONLY_RUNTIME_TEST_FILES].toSorted(),
         );
@@ -4114,12 +4130,22 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           const owns = (group: { shard_name: string }) =>
             group.shard_name === owner || group.shard_name.startsWith(`${owner}-hosted-`);
           const reduced = after.flatMap((shard) => shard.groups).filter(owns);
-          expect(reduced.length, owner).toBeGreaterThan(0);
+          const retainedFiles = before
+            .flatMap((shard) => shard.groups)
+            .filter(owns)
+            .flatMap((group) => group.includePatterns ?? [])
+            .filter((file) => !isReleaseOnlyRuntimeTestFile(file));
+          expect(reduced.flatMap((group) => group.includePatterns ?? []).toSorted(), owner).toEqual(
+            retainedFiles.toSorted(),
+          );
           for (const group of reduced) {
             const timingKey = expectDefined(group.timing_key, "reduced runtime timing identity");
-            expect(parseCompactSplitTimingKey(timingKey)?.parentShardName ?? timingKey).toBe(
-              `changed-${owner}`,
+            const timingParent =
+              parseCompactSplitTimingKey(timingKey)?.parentShardName ?? timingKey;
+            expect(fullCommandTimingParents.has(timingParent), `${owner}: ${timingParent}`).toBe(
+              false,
             );
+            expect(timingParent.replace(/#file-parallel-(?:2|8)$/u, "")).toBe(`changed-${owner}`);
           }
         }
       }
@@ -5459,6 +5485,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(listMatchedTestFiles(worker)).toEqual(gatewayDatabaseWorkerTestFiles);
     expect(listMatchedTestFiles(worker)).toEqual(
       expect.arrayContaining([
+        "src/gateway/github-publication-transcript.test.ts",
+        "src/gateway/session-lifecycle-run-failure.test.ts",
+        "src/gateway/session-lifecycle-state.persistence.test.ts",
+        "src/gateway/worker-workspace-recovery-transcript.test.ts",
         "src/gateway/session-utils.queued-collector-admission.test.ts",
         "src/gateway/session-utils.queued-collector.test.ts",
       ]),
@@ -5490,6 +5520,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(infra.test?.setupFiles).toEqual(support.test?.setupFiles);
     const admitted = new Set(listMatchedTestFiles(infra));
     for (const file of [
+      "src/agents/subagents/registry/subagent-registry.session-failure.test.ts",
+      "src/plugin-sdk/session-transcript-runtime.test.ts",
       "src/agents/sessions/sdk.auth-migration.test.ts",
       "src/agents/subagents/spawn/subagent-spawn.in-process-gateway.test.ts",
       "src/agents/subagents/spawn/subagent-spawn.authority.test.ts",
