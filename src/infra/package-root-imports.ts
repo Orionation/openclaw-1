@@ -98,8 +98,13 @@ function union(...values: Origin[][]): Origin[] {
   return result.length ? result : ["unknown"];
 }
 
+type PackageRootImportOccurrence = {
+  specifier: string;
+  start: number;
+};
+
 /** Read dependency ownership without resolving or executing the inspected package. */
-export function collectPackageRootImports(source: string): string[] {
+function collectPackageRootImportOccurrences(source: string): PackageRootImportOccurrence[] {
   // SAFETY: The pinned TypeScript runtime implements the compiler API in its declarations.
   const ts = require("typescript") as typeof import("typescript");
   const file = ts.createSourceFile(
@@ -109,9 +114,9 @@ export function collectPackageRootImports(source: string): string[] {
     true,
     ts.ScriptKind.JS,
   );
-  const imports: string[] = [];
-  const recordImport = (specifier: string) => {
-    imports.push(specifier);
+  const imports: PackageRootImportOccurrence[] = [];
+  const recordImport = (specifier: string, node: ts.Node) => {
+    imports.push({ specifier, start: node.getStart(file) });
   };
   const calls: ts.CallExpression[] = [];
   const scopes: Array<ts.SourceFile | ts.FunctionLikeDeclaration> = [file];
@@ -193,13 +198,13 @@ export function collectPackageRootImports(source: string): string[] {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
       const specifier = literal(node.moduleSpecifier);
       if (specifier !== undefined) {
-        recordImport(specifier);
+        recordImport(specifier, node.moduleSpecifier!);
       }
     }
     if (ts.isCallExpression(node)) {
       const specifier = literal(node.arguments[0]);
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword && specifier !== undefined) {
-        recordImport(specifier);
+        recordImport(specifier, node.arguments[0]!);
       } else {
         calls.push(node);
       }
@@ -658,8 +663,18 @@ export function collectPackageRootImports(source: string): string[] {
         callee.text === "require" &&
         !values.every((value) => value === "caller"))
     ) {
-      recordImport(specifier);
+      recordImport(specifier, node.arguments[0]!);
     }
   }
   return imports;
+}
+
+export function collectPackageRootImports(
+  source: string,
+  onImport?: (specifier: string, start: number) => void,
+): string[] {
+  return collectPackageRootImportOccurrences(source).map((entry) => {
+    onImport?.(entry.specifier, entry.start);
+    return entry.specifier;
+  });
 }

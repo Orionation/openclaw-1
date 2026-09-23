@@ -664,6 +664,7 @@ export function createPackedCompletionSmokeEnv(
 
 export function collectPackedInstalledPackageVerificationErrors(params: {
   additionalCompanionManifestRoots?: string[];
+  allowLegacyGeneratedOwnership?: boolean;
   expectedVersion: string;
   installedBinaryVersion?: string;
   packageRoot: string;
@@ -673,6 +674,7 @@ export function collectPackedInstalledPackageVerificationErrors(params: {
   ) as { version?: string };
   const errors = collectInstalledPackageErrors({
     additionalCompanionManifestRoots: params.additionalCompanionManifestRoots,
+    allowLegacyGeneratedOwnership: params.allowLegacyGeneratedOwnership,
     expectedVersion: params.expectedVersion,
     installedVersion: packageJson.version?.trim() ?? "",
     packageRoot: params.packageRoot,
@@ -711,6 +713,9 @@ function verifyPackedInstalledPackage(params: {
     // The selected source checkout is immutable release input. Its companion
     // manifests are the exact inputs packed by the following plugin preflight.
     additionalCompanionManifestRoots: [resolve("extensions")],
+    allowLegacyGeneratedOwnership: !existsSync(
+      resolve("src/infra/runtime-dependency-ownership.ts"),
+    ),
     expectedVersion: params.expectedVersion,
     installedBinaryVersion,
     packageRoot: params.packageRoot,

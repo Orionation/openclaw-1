@@ -1238,8 +1238,72 @@ describe("collectInstalledRootDependencyManifestErrors", () => {
 
     try {
       expect(
-        collectInstalledRootDependencyManifestErrors(packageRoot, [trustedManifestRoot]),
+        collectInstalledRootDependencyManifestErrors(packageRoot, [trustedManifestRoot], true),
       ).toStrictEqual([]);
+    } finally {
+      rmSync(installRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts legacy generated ownership only with a trusted companion manifest root", () => {
+    const source = [
+      'import { createRequire } from "node:module";',
+      "//#region extensions/discord/src/voice/sdk-runtime.ts",
+      'const voice = createRequire(import.meta.url)("@discordjs/voice");',
+      "//#endregion",
+      "export { voice };",
+      "",
+    ].join("\n");
+    const { installRoot, packageRoot } = makeCompanionImportFixture({
+      companions: [],
+      source,
+    });
+    const trustedManifestRoot = join(installRoot, "trusted-extensions");
+    writePackageFile(trustedManifestRoot, "discord/package.json", {
+      name: "@openclaw/discord",
+      version: "2026.7.33",
+      dependencies: { "@discordjs/voice": "0.19.2" },
+    });
+
+    try {
+      expect(collectInstalledRootDependencyManifestErrors(packageRoot)).toEqual([
+        "installed package root is missing declared runtime dependency '@discordjs/voice' for dist importers: companion-runtime.js. Add it to package.json dependencies/optionalDependencies.",
+      ]);
+      expect(
+        collectInstalledRootDependencyManifestErrors(packageRoot, [trustedManifestRoot], true),
+      ).toStrictEqual([]);
+    } finally {
+      rmSync(installRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let legacy generated ownership cover a root-owned import", () => {
+    const source = [
+      'import { createRequire } from "node:module";',
+      "//#region extensions/discord/src/voice/sdk-runtime.ts",
+      'const voice = createRequire(import.meta.url)("@discordjs/voice");',
+      "//#endregion",
+      'const rootVoice = createRequire(import.meta.url)("@discordjs/voice");',
+      "export { rootVoice, voice };",
+      "",
+    ].join("\n");
+    const { installRoot, packageRoot } = makeCompanionImportFixture({
+      companions: [],
+      source,
+    });
+    const trustedManifestRoot = join(installRoot, "trusted-extensions");
+    writePackageFile(trustedManifestRoot, "discord/package.json", {
+      name: "@openclaw/discord",
+      version: "2026.7.33",
+      dependencies: { "@discordjs/voice": "0.19.2" },
+    });
+
+    try {
+      expect(
+        collectInstalledRootDependencyManifestErrors(packageRoot, [trustedManifestRoot]),
+      ).toEqual([
+        "installed package root is missing declared runtime dependency '@discordjs/voice' for dist importers: companion-runtime.js. Add it to package.json dependencies/optionalDependencies.",
+      ]);
     } finally {
       rmSync(installRoot, { recursive: true, force: true });
     }
