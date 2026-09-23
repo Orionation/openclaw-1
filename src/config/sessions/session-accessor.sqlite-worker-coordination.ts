@@ -31,16 +31,16 @@ export type SqliteMutationWorkerCoordination = {
 };
 
 async function prepareLifecycleDelegate(context: OpenClawStateWorkerContext, actorId: string) {
+  // This custody also drains retained workers after read admission is revoked.
+  // Request owners validate new work; cleanup keeps its original native custody.
   const coordinator = await acquireStateDatabaseCoordinatorWithWait({
     operation: "mutation-worker-admission",
     databasePath: context.admission.databasePath,
     runtime: context.coordinatorRuntime,
     deadlineMs: performance.now() + OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-    assertCurrent: () => context.admission.assertCurrent(),
   });
   return withStateDatabaseCoordinatorRuntimeDirectory(context.coordinatorRuntime, () =>
     runWithSqliteCoordinator(coordinator, "SQLite mutation Worker lifecycle admission", () => {
-      context.admission.assertCurrent();
       return tryCreateStateLifecycleDelegate({
         databasePath: context.admission.databasePath,
         actorId,

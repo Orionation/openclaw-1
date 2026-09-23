@@ -17,7 +17,7 @@ export async function acquireStateDatabaseCoordinatorWithWait(params: {
   runtime: StateDatabaseCoordinatorRuntime;
   deadlineMs: number;
   signal?: AbortSignal;
-  assertCurrent(): void | Promise<void>;
+  assertCurrent?(): void | Promise<void>;
   onWait?(): void;
 }) {
   const startedAt = performance.now();
@@ -46,7 +46,7 @@ export async function acquireStateDatabaseCoordinatorWithWait(params: {
       acquire: async () => {
         acquisitionFailed = false;
         params.signal?.throwIfAborted();
-        await params.assertCurrent();
+        await params.assertCurrent?.();
         params.signal?.throwIfAborted();
         if (performance.now() >= params.deadlineMs) {
           throw new StateDatabaseCoordinatorContentionError("state-lifecycle");
