@@ -148,6 +148,7 @@ export function adjustTextareaHeight(el: HTMLTextAreaElement) {
     return;
   }
   const thread = el.closest(".chat")?.querySelector<HTMLElement>(".chat-thread") ?? null;
+  const threadHeight = thread?.clientHeight;
   const scrollPosition = thread ? captureChatSessionScrollPosition(thread) : null;
   // Hide the browser's scrollbar while measuring; restore it only when the
   // final CSS-constrained height actually clips the draft.
@@ -170,8 +171,11 @@ export function adjustTextareaHeight(el: HTMLTextAreaElement) {
     if (scrollPosition?.anchorToEnd) {
       thread.scrollTop = thread.scrollHeight;
     }
-    // A following composer commit can hide this viewport from browser observers.
     const after = thread.scrollTop;
+    if (thread.clientHeight === threadHeight && after === scrollPosition?.scrollTop) {
+      return;
+    }
+    // A following composer commit can hide this viewport from browser observers.
     publishTranscriptScroll(thread, {
       type: "resize",
       ...(scrollPosition?.anchorToEnd && scrollPosition.scrollTop !== after
