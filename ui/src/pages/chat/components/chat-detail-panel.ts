@@ -284,7 +284,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
         this.fileEditor = editor;
         this.fileDraftContent = null;
         editor.onDocChanged((nextContent) => {
-          const dirty = nextContent !== this.fileSavedContent;
+          const dirty = !editor.contentEquals(this.fileSavedContent);
           if (dirty !== this.fileDirty) {
             this.fileDirty = dirty;
           }
@@ -490,7 +490,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     const draftContent = this.currentFileText();
     this.fileSavedContent = nextContent;
     this.fileHash = hash;
-    this.fileDirty = draftContent !== nextContent;
+    this.fileDirty = !(this.fileEditor?.contentEquals(nextContent) ?? draftContent === nextContent);
     this.fileDraftContent = !this.fileEditor && this.fileDirty ? draftContent : null;
     setFileDraft(content, this.fileDirty ? { content: draftContent, expectedHash: hash } : null);
     this.fileSaveNotice = null;
