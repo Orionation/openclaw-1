@@ -114,6 +114,7 @@ jobs:
     outputs:
       checkout_revision: ${{ steps.checkout_ref.outputs.sha }}
       pr_job_count: ${{ steps.manifest.outputs.pr_job_count }}
+      failure_probe_check: ${{ steps.manifest.outputs.failure_probe_check }}
       candidate_trust: ${{ steps.candidate_trust.outputs.trust }}
       cache_mode: ${{ steps.candidate_trust.outputs.cache_mode }}
       cache_write_allowed: ${{ steps.candidate_trust.outputs.cache_write_allowed }}
@@ -2348,6 +2349,11 @@ jobs:
             countPrJobs(manifest.run_ui_tests, 3) + countPrJobs(manifest.run_macos_swift, 2) +
             countPrJobs(manifest.run_ios_build) + countPrJobs(manifest.run_proof_tier && manifest.run_ui_e2e);
 
+          // Temporary live cancellation proof; removed with the probe commit.
+          manifest.failure_probe_check = manifest.checks_node_core_nondist_matrix.include
+            .find((row) => row.runner?.startsWith("blacksmith-"))?.check_name ??
+            manifest.checks_node_core_nondist_matrix.include[0]?.check_name ?? "";
+
           for (const [key, value] of Object.entries(manifest)) {
             appendFileSync(
               outputPath,
@@ -4010,6 +4016,12 @@ jobs:
       matrix: ${{ fromJson(needs.preflight.outputs.checks_node_core_nondist_matrix) }}
     steps:
       - *linux_node_checkout_step
+      - name: Temporary deliberate failure for cancellation proof
+        if: github.event_name == 'pull_request' && matrix.check_name == needs.preflight.outputs.failure_probe_check
+        run: |
+          echo "Intentional PR cancellation proof; this temporary commit will be removed."
+          exit 97
+
       - name: Initialize RunsOn
         if: matrix.runner == 'runson-c8i-8xlarge' && runner.environment == 'self-hosted'
         uses: runs-on/action@efac073ea2507ec18797de3a81704201ade11d9d # v2
