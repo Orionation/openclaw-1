@@ -176,6 +176,9 @@ suite.define(() => {
           await composer.fill("/think");
           await composer.press("Tab");
           await expect.poll(() => composer.inputValue()).toBe("/think ");
+          await composer.press("Escape");
+          await page.locator('.slash-menu[role="listbox"]').waitFor({ state: "hidden" });
+          expect(await composer.inputValue()).toBe("/think ");
           await composer.press("Enter");
           await expect
             .poll(async () => {
@@ -317,6 +320,9 @@ suite.define(() => {
             await composer.fill("/think");
             await composer.press("Tab");
             await expect.poll(() => composer.inputValue()).toBe("/think ");
+            await composer.press("Escape");
+            await page.locator('.slash-menu[role="listbox"]').waitFor({ state: "hidden" });
+            expect(await composer.inputValue()).toBe("/think ");
             await expect
               .poll(() =>
                 page
