@@ -5,11 +5,13 @@ description: "Invoke whenever writing, changing, reviewing, or sweeping tests. A
 
 # Test Audit
 
-Two modes, one value bar. Authoring mode gates every new or changed test at
+Three modes, one value bar. Authoring mode gates every new or changed test at
 write time. Audit mode runs focused sweeps of tests that re-assert source,
 duplicate stronger proof, couple behavior to implementation, or keep test-only
 production seams alive. Continue broad audits as separate coherent follow-up
-PRs; optimize for confidence, not deletion count.
+PRs; optimize for confidence, not deletion count. Campaign mode prunes one
+whole subsystem's test surface (every test file a plugin or core area owns);
+before starting one, read [CAMPAIGN.md](CAMPAIGN.md).
 
 ## Authoring gate
 
@@ -55,8 +57,8 @@ run parallel discovery lanes when available:
 - UI, apps, scripts, and tooling;
 - a cross-cutting pattern sweep.
 
-Prefer a few high-confidence candidates over a large speculative inventory.
-Look for:
+Outside campaign mode, prefer a few high-confidence candidates over a large
+speculative inventory. Look for:
 
 - assertion-free coverage probes;
 - self-comparisons and identity copiers;
@@ -66,7 +68,14 @@ Look for:
 - duplicate invocations of the same contract;
 - provider-local replays of shared helpers;
 - tests whose only purpose is preserving test-only exports, globals, or wrappers;
-- dead production code whose only callers are tests.
+- dead production code whose only callers are tests;
+- expected values produced by the helper or renderer under test;
+- mocks that implement the asserted behavior, or one identical mock standing in
+  for different APIs;
+- fixtures that supply the receipt, admission, or callback ordering the owner
+  should produce, or persistence asserted against a store the path never writes;
+- names or fixtures that promise more than the input exercises, such as a
+  "retires the window" test asserting the window was not cleared.
 
 ## Retention bar
 
@@ -76,7 +85,9 @@ cross-language, package, release, or architecture contract. Also keep:
 
 - call ordering when order is observable behavior;
 - regressions with a credible failure mode;
-- source inspection when it is the cheapest independent guard.
+- source inspection when it is the cheapest independent guard;
+- a retained test that fails on the baseline: treat it as a possible product
+  bug, reproduce it, and repair the owner rather than deleting it.
 
 Static or slow is not a deletion reason. A test that resembles implementation
 may still be the independent contract; prove otherwise before removing it.
