@@ -78,6 +78,7 @@ function createFixture() {
     getMessagingToolSentTexts: vi.fn(() => []),
     getMessagingToolSourceReplyPayloads: vi.fn(() => []),
     getSourceReplyDelivered: vi.fn(() => undefined),
+    getSourceReplyDeliveryState: vi.fn(() => undefined),
     getPendingToolMediaReply: vi.fn(() => undefined),
     getToolAutoDeliveryMediaUrls: vi.fn(() => []),
     getReplayState: vi.fn(() => ({ replayInvalid: false, hadPotentialSideEffects: false })),
@@ -130,6 +131,7 @@ function createFixture() {
     appendMessage: vi.fn((message) => messages.push(message)),
     buildSessionContext: vi.fn(() => ({ messages: [] })),
     getSessionTarget: vi.fn(() => undefined),
+    getSessionId: () => "active-session",
   };
   const hookRunner = { hasHooks: vi.fn(() => false) };
   const cacheTrace = { recordStage: vi.fn() };

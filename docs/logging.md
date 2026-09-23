@@ -243,6 +243,20 @@ bounded, redacted error details for classification, including when a large
 partial response cannot fit in the transcript. Unrecognized errors still use
 generic chat copy; inspect the Gateway logs and stored error for diagnosis.
 
+Responses output-identity conflicts record the event type, output position,
+expected and observed item types, and whether a tool call completed, without
+recording item IDs or response content. OpenClaw uses the existing bounded session
+retry policy when the failing response produced no visible text or completed tool
+calls and its request enabled only client-executed function tools. Continuation
+keeps earlier tool results, so those completed actions are not replayed. Conflicts
+after output or with provider-hosted tools remain terminal; inspect earlier
+results before continuing. Previously emitted text remains terminal even if a
+later snapshot clears it. Automatic recovery requires a successful completed
+response without a refusal; conflicts before that terminal cannot be retried
+because the final outcome is unknown. Failed or incomplete terminal responses,
+including content filtering, cannot be overridden by identity recovery. The
+identity checks stay enforced on every attempt.
+
 A worker message-size failure is separate from a model context-window limit.
 Retry with a smaller response or continue on the Gateway. If the worker cannot
 preserve the model's continuation data, stop or reclaim it before retrying on
@@ -663,8 +677,13 @@ parent's `pid`, `threadId` and `isMainThread`, the actual Node `workerThreadId`,
 startup, validation, admission waits, work, and cleanup. It does not measure CPU
 time or isolate a validation phase. Short writer sections can therefore remain
 quiet while this whole-operation warning exposes slow preparation between them.
-The record inherits an existing parent trace when available; it contains no
-database path, session identifier, plan content, or raw error.
+The record inherits an existing parent trace when available. Failed retained
+reclamation operations also include `sessionIdHash` (when targeting one session),
+`error` (the redacted message and causes), and `errorFrame` (the first stack frame).
+These failures emit one warning even below one second, named
+`SQLite reclamation Worker failed`; slower failures use the existing slow-operation
+warning. Session identifiers use the same hash as other session SQLite diagnostics;
+the failure fields are redacted and bounded to 2,048 characters each.
 Cold-storage operations use the same warning with `reclamationKind` set to
 `cold-batch` (archive or externalize), `cold-maintain` (reclaim free pages), or
 `cold-restore` (restore a transcript). Their writer warnings carry the same Worker
@@ -673,7 +692,7 @@ identity and numbered admission fields.
 ### SQLite transaction timing
 
 The `sqlite/transaction` warnings `slow SQLite transaction hold`,
-`slow SQLite transaction lock wait`, and `SQLite transaction lock wait failed`
+`slow SQLite transaction step`, and `SQLite transaction lock wait failed`
 include `pid`, Node's `threadId`, and `isMainThread` for the thread executing the
 transaction. Inspect the original `raw` record in `openclaw logs --json` to
 distinguish the main thread from Workers sharing the same process. `async: false`
@@ -682,8 +701,11 @@ describes the synchronous transaction helper; it does not identify the thread.
 Hold time covers the synchronous callback and its result checks after `BEGIN`
 and before `COMMIT`, including any JavaScript consumer work inside that callback.
 It excludes database opening and the separately timed begin and commit steps.
-These elapsed durations do not measure SQL CPU time or establish a causal link
-to a nearby request.
+Successful begin and commit step timings include native execution, storage work,
+and scheduling delays; they do not establish lock contention. The separate
+`SQLite transaction lock wait failed` warning identifies caught SQLite lock
+errors. These elapsed durations do not measure SQL CPU time or establish a
+causal link to a nearby request.
 
 The operation `session.reclamation.commit-settlement` identifies the parent's
 synchronous join after it authorizes a reclamation Worker to commit. Its lock

@@ -11,6 +11,24 @@ import { getAgentJobSession, setGatewayDedupeEntry, waitForAgentJob } from "./ag
 let runSequence = 0;
 
 describe("waitForAgentJob settled execution", () => {
+  it("observes completed hidden refreshes without treating acceptance as completion", async () => {
+    const runId = `progress-card-refresh:completed-${runSequence++}`;
+    const dedupe = new Map<string, DedupeEntry>();
+    for (const status of ["accepted", "completed"] as const) {
+      setGatewayDedupeEntry({
+        dedupe,
+        key: `chat:${runId}`,
+        entry: { ts: Date.now(), ok: true, payload: { runId, status } },
+      });
+      const result = await waitForAgentJob({ runId, source: "chat", timeoutMs: 0 });
+      if (status === "accepted") {
+        expect(result).toBeNull();
+      } else {
+        expect(result).toMatchObject({ status: "ok" });
+      }
+    }
+  });
+
   it("normalizes an outer timeout after yield before publishing the wait snapshot", async () => {
     const runId = `outer-timeout-after-yield-${runSequence++}`;
     const waiter = waitForAgentJob({ runId, timeoutMs: 60_000 });
@@ -61,10 +79,14 @@ describe("waitForAgentJob settled execution", () => {
     vi.useRealTimers();
   });
 
-  it.each(["ok", "error", "timeout"] as const)(
-    "returns recorded reply evidence only after chat settles: %s",
-    async (status) => {
-      const runId = `chat-recorded-reply-${runSequence++}`;
+  it.each(
+    (["agent", "chat"] as const).flatMap((source) =>
+      (["ok", "error", "timeout"] as const).map((status) => ({ source, status })),
+    ),
+  )(
+    "returns recorded reply evidence only after $source publishes: $status",
+    async ({ source, status }) => {
+      const runId = `${source}-recorded-reply-${runSequence++}`;
       const terminalReply = { disposition: "visible", text: "The requested answer" } as const;
       const terminalReceipt = {
         runId,
@@ -76,27 +98,25 @@ describe("waitForAgentJob settled execution", () => {
         rerouted: false,
         terminalDisposition: "visible",
       };
-      const waiter = waitForAgentJob({ runId, source: "chat", timeoutMs: 60_000 });
+      const waiter = waitForAgentJob({ runId, source, timeoutMs: 60_000 });
       emitAgentEvent({
         runId,
         stream: "lifecycle",
         data: { phase: "end", executionSettled: true, terminalReply, terminalReceipt },
       });
-      // Runtime completion must not release the chat delivery barrier.
-      await expect(waitForAgentJob({ runId, source: "chat", timeoutMs: 0 })).resolves.toBeNull();
+      // Runtime completion must not release the RPC publication barrier.
+      await expect(waitForAgentJob({ runId, source, timeoutMs: 0 })).resolves.toBeNull();
       setGatewayDedupeEntry({
         dedupe: new Map<string, DedupeEntry>(),
-        key: `chat:${runId}`,
+        key: `${source}:${runId}`,
         entry: { ts: Date.now(), ok: status === "ok", payload: { runId, status } },
       });
       await expect(waiter).resolves.toMatchObject({ status, terminalReply, terminalReceipt });
-      await expect(waitForAgentJob({ runId, source: "chat", timeoutMs: 0 })).resolves.toMatchObject(
-        {
-          status,
-          terminalReply,
-          terminalReceipt,
-        },
-      );
+      await expect(waitForAgentJob({ runId, source, timeoutMs: 0 })).resolves.toMatchObject({
+        status,
+        terminalReply,
+        terminalReceipt,
+      });
     },
   );
 
