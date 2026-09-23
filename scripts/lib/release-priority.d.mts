@@ -1,6 +1,5 @@
 export const RELEASE_PRIORITY_VARIABLE: "OPENCLAW_RELEASE_PRIORITY_RUN";
 export const RELEASE_PRIORITY_RECORD_KIND: string;
-export const CI_GATE_JOB: string;
 export const RELEASE_PRIORITY_WORKFLOWS: readonly string[];
 export interface ReleasePriorityRun {
   event: string;

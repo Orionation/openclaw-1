@@ -1500,7 +1500,7 @@ function blockerIndex(issues) {
   return issues.map((issue) => jsonSha256(blockerEvidence(issue))).toSorted();
 }
 
-export function isReleaseCheckJobAdvisory({ jobName, releaseProfile, workflowRef }) {
+function isReleaseCheckJobAdvisory({ jobName, releaseProfile, workflowRef }) {
   // Cross-OS Windows/macOS results remain evidence without gating npm publication.
   // Match only execution lanes: Linux and shared preparation still block.
   if (/^cross_os_release_checks \/ (?:Windows|macOS) \/ /u.test(jobName)) {
