@@ -10137,11 +10137,11 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       runnerProfile: "hybrid",
       runnerEnvironment: "self-hosted",
       preflightOutputs: { node_runner_backend: "runson" },
-      matrix: { runner: "runson-c8i-8xlarge", check_name: "cron-1" },
+      matrix: { runner: "runson-c8i-2xlarge", check_name: "cron-1", shard_name: "runson-cron" },
     } as const;
     const label = evaluateWorkflowExpression(job["runs-on"], context);
     expect(label).toBe(
-      "runs-on=123-cron-1/family=c8i.8xlarge/cpu=32/ram=64/spot=true/retry=false/image=ubuntu24-full-x64/volume=80gb",
+      "runs-on=123-cron-1/family=c8i.2xlarge/cpu=8/ram=16/spot=true/retry=false/image=ubuntu24-full-x64/volume=80gb",
     );
     expect(
       evaluateWorkflowExpression(job["runs-on"], {
@@ -10149,14 +10149,17 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         matrix: { ...context.matrix, check_name: "cron-2" },
       }),
     ).not.toBe(label);
-    for (const overrides of [
+    const fallbacks: Partial<Parameters<typeof evaluateWorkflowExpression>[1]>[] = [
       { runAttempt: 2 },
+      { preflightOutputs: { node_runner_backend: "runson", frozen_target: "true" } },
+      { matrix: { runner: "runson-c8i-8xlarge", check_name: "legacy-cron" } },
       { preflightOutputs: { node_runner_backend: "hybrid" } },
       {
         headRepository: "fork/openclaw",
         preflightOutputs: { node_runner_backend: "github" },
       },
-    ]) {
+    ];
+    for (const overrides of fallbacks) {
       expect(evaluateWorkflowExpression(job["runs-on"], { ...context, ...overrides })).toBe(
         "ubuntu-24.04",
       );
@@ -10172,7 +10175,18 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     for (const [name, matrix, expected, hosted] of [
       ["build-artifacts", {}, "blacksmith-16vcpu-ubuntu-2404", "ubuntu-24.04"],
       ["checks-ui", {}, "blacksmith-8vcpu-ubuntu-2404", "ubuntu-24.04"],
-      ["checks-ui-e2e", { task: "control-ui" }, "blacksmith-16vcpu-ubuntu-2404", "ubuntu-24.04"],
+      [
+        "checks-ui-e2e",
+        { task: "control-ui", shard: 1 },
+        "runs-on=123-ui-e2e-1/family=c8i.2xlarge/cpu=8/ram=16/spot=true/retry=false/image=ubuntu24-full-x64/volume=80gb",
+        "ubuntu-24.04",
+      ],
+      [
+        "checks-ui-e2e",
+        { task: "browser-extension" },
+        "blacksmith-8vcpu-ubuntu-2404",
+        "ubuntu-24.04",
+      ],
       ["checks-windows", {}, "blacksmith-16vcpu-windows-2025", "windows-2025"],
       [
         "check-shard",
@@ -10229,6 +10243,38 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         }),
       ).toBe(expected);
     }
+    const uiJob = readCiWorkflow().jobs["checks-ui-e2e"];
+    const uiSetup = expectDefined(
+      uiJob.steps.find((step: WorkflowStep) => step.name === "Setup Node environment"),
+      "UI setup",
+    );
+    expect(
+      evaluateWorkflowExpression(uiSetup.with["dependency-cache"], {
+        ...context,
+        matrix: { task: "control-ui" },
+      }),
+    ).toBe("false");
+    expect(
+      evaluateWorkflowExpression(uiJob["runs-on"], {
+        ...context,
+        matrix: { task: "control-ui" },
+        preflightOutputs: { node_runner_backend: "runson", frozen_target: "true" },
+      }),
+    ).toBe("ubuntu-24.04");
+    const bounded = {
+      ...context,
+      matrix: { runner: "runson-c8a-4xlarge", check_name: "bounded-node" },
+    };
+    expect(evaluateWorkflowExpression(job["runs-on"], bounded)).toBe(
+      "runs-on=123-bounded-node/family=c8a.4xlarge/cpu=16/ram=32/spot=true/retry=false/image=ubuntu24-full-x64/volume=80gb",
+    );
+    expect(evaluateWorkflowExpression(setup.with["dependency-cache"], bounded)).toBe("false");
+    expect(
+      evaluateWorkflowExpression(setup.with["node-version"], {
+        ...bounded,
+        env: { NODE_VERSION: "24.19.0" },
+      }),
+    ).toBe("24.x");
     expect(setup.with).toMatchObject({ "vitest-fs-cache": "true", "node-compile-cache": "true" });
     const resources = expectDefined(
       job.steps.find((step: WorkflowStep) => step.name === "Configure Node test resources"),
@@ -10236,6 +10282,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
     for (const matrix of [
       context.matrix,
+      { ...context.matrix, shard_name: "changed-runson-cron" },
       {
         runner: "blacksmith-32vcpu-ubuntu-2404",
         check_name: "checks-node-runson-cron-blacksmith-control",
@@ -10249,6 +10296,28 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       expect(evaluateWorkflowExpression(setup.with["node-version"], comparison)).toBe("24.19.0");
       expect(evaluateWorkflowExpression(resources.env.RUNSON_JOB, comparison)).toBe("true");
     }
+    expect(evaluateWorkflowExpression(resources.env.RUNSON_MAX_WORKERS, bounded)).toBe("8");
+    expect(evaluateWorkflowExpression(resources.env.RUNSON_MAX_WORKERS, context)).toBe("2");
+    const resourceFallbacks: Partial<Parameters<typeof evaluateWorkflowExpression>[1]>[] = [
+      { runnerEnvironment: "github-hosted" },
+      { runAttempt: 2 },
+      { preflightOutputs: { node_runner_backend: "runson", frozen_target: "true" } },
+    ];
+    for (const overrides of resourceFallbacks) {
+      expect(
+        evaluateWorkflowExpression(resources.env.RUNSON_MAX_WORKERS, { ...bounded, ...overrides }),
+      ).toBe("2");
+    }
+    const allocation = expectDefined(
+      job.steps.find((step: WorkflowStep) => step.name === "Record RunsOn allocation"),
+      "RunsOn allocation",
+    );
+    expect(evaluateWorkflowExpression(allocation.env.EXPECTED_RUNSON_INSTANCE_TYPE, bounded)).toBe(
+      "c8a.4xlarge",
+    );
+    expect(evaluateWorkflowExpression(allocation.env.EXPECTED_RUNSON_INSTANCE_TYPE, context)).toBe(
+      "c8i.2xlarge",
+    );
     const initialize = expectDefined(
       job.steps.find((step: WorkflowStep) => step.name === "Initialize RunsOn"),
       "RunsOn initialization",
@@ -10274,9 +10343,12 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     mkdirSync(bin);
     writeExecutable(path.join(bin, "nproc"), ["#!/bin/sh", 'printf "%s\\n" "$FIXTURE_CORES"']);
     writeExecutable(path.join(bin, "node"), ["#!/bin/sh", "exit 64"]);
-    for (const [cores, workers] of [
-      [32, 2],
-      [1, 1],
+    for (const [cores, ceiling, concurrency, workers] of [
+      [16, 8, 1, 8],
+      [16, 8, 2, 2],
+      [4, 8, 1, 4],
+      [8, 2, 1, 2],
+      [1, 2, 1, 1],
     ]) {
       const output = path.join(root, "github-env");
       writeFileSync(output, "");
@@ -10288,9 +10360,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           GITHUB_ENV: output,
           FIXTURE_CORES: String(cores),
           RUNSON_JOB: "true",
+          RUNSON_MAX_WORKERS: String(ceiling),
           RUNNER_ENVIRONMENT: "self-hosted",
           FROZEN_TARGET: "false",
-          SHARD_PLAN_CONCURRENCY: "1",
+          SHARD_PLAN_CONCURRENCY: String(concurrency),
         },
       });
       expect(result.status, result.stderr).toBe(0);

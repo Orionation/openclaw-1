@@ -3908,7 +3908,7 @@ function routeRunsOnJobs(
     routed.push({
       checkName: "checks-node-runson-cron",
       shardName: "runson-cron",
-      runner: "runson-c8i-8xlarge",
+      runner: "runson-c8i-2xlarge",
       groups: cronGroups,
       requiresDist: false,
       planConcurrency: 1,
@@ -3927,7 +3927,22 @@ function routeRunsOnJobs(
       `compact runson node test plan exceeds ${jobCap} jobs (${routed.length} planned)`,
     );
   }
-  return routed.toSorted((a, b) => a.checkName.localeCompare(b.checkName));
+  return routed
+    .map((job) => {
+      // The 32-class supplies eight CPUs and 31 GiB. Preserve its memory floor
+      // for overlapping children and the eight-worker isolated Gateway cohort.
+      // Runtime preparation retains Blacksmith until its complete flow qualifies.
+      if (
+        job.runner !== EXTRA_LARGE_NODE_TEST_RUNNER ||
+        job.requiresDist ||
+        job.pretestBuildMode ||
+        job.groups.some((group) => group.requiresDist || group.pretestBuildMode)
+      ) {
+        return job;
+      }
+      return Object.assign({}, job, { runner: "runson-c8a-4xlarge" });
+    })
+    .toSorted((a, b) => a.checkName.localeCompare(b.checkName));
 }
 
 function createCompactNodeTestShardBundles(
@@ -3940,7 +3955,7 @@ function createCompactNodeTestShardBundles(
   hostedToolingTailDonation?: HostedToolingTailDonation,
 ): CompactNodeTestShard[] {
   if (options.runnerBackend === "runson") {
-    // Hybrid owns placement and measured serial packing; RunsOn only extracts cron.
+    // Hybrid owns placement and workers; RunsOn changes only execution capacity.
     return routeRunsOnJobs(
       createCompactNodeTestShardBundles(
         sourceShards,

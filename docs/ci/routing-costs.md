@@ -55,7 +55,51 @@ Numbered compact bins change when membership changes. A matching suffix does not
 
 ## RunsOn remains unqualified
 
+The next qualification extends the existing opt-in route to non-build 32-class
+Node rows on AMD `c8a.4xlarge` (16 vCPUs, 32 GiB) and Control UI E2E on
+`c8i.2xlarge` (8 vCPUs, 16 GiB). Cron is downsized to that same Intel class.
+Hybrid remains the packing owner. Test selectors, worker caps, serial admission,
+memory gates and timeouts are unchanged. No additional hosted rows are admitted
+while hosted queue pressure remains unresolved. Runtime builds stay on Blacksmith.
+
+[Main baseline 35810905247](https://github.com/openclaw/openclaw/actions/runs/35810905247)
+reported eight actual CPUs in every one of its forty 32-class jobs. Test-step
+`time -p` CPU time divided by elapsed time measured 2.32–5.18 busy cores on average,
+not peak utilization. Eight rows used two children with two workers each; the
+other 32 had one child slot and an eight-worker ceiling, with smaller group pins.
+The 32-GiB replacement preserves the paired-plan 24-GiB and isolated Gateway
+28-GiB admission floors; an 8-vCPU/16-GiB replacement would serialize those rows.
+
+Fetch **all pages** of jobs: that main run has 105 records, including skipped
+placeholders. Active Blacksmith 32/16/8-class jobs consumed 236.22/39.95/51.72
+machine-minutes, or $15.118/$1.278/$0.827 at historical list rates. The complete
+327.88-minute total is the baseline; the first 100 records undercount it.
+The main runs at 02:34–02:47 UTC on September 23 consumed 298–328 Blacksmith
+minutes and already exceeded the 900-second workflow objective. Queue delay
+must remain visible in the native comparison.
+
+The September 23 public regional Spot feed quotes `c8a.4xlarge` at $0.3081/hour
+and `c8i.2xlarge` at $0.1763/hour in `us-east-1`. At equal runtime, the forty-row
+236.22-minute slice would cost about $1.213 on AMD versus $15.118 on Blacksmith;
+at 25% longer, about $1.516. These are upper-scope projections: build rows are
+retained, and actual AWS cost also includes launch, teardown, storage, networking
+and the control plane. Record exact-head per-class timings and allocation facts
+in the qualification PR before claiming savings or the fifteen-minute objective.
+
+For fallback budgeting, the September 23 [Vantage instance catalog](https://instances.vantage.sh/)
+lists Linux on-demand at $0.86216/hour for `c8a.4xlarge` and $0.37484/hour for
+`c8i.2xlarge` in that region. The same entire large slice would cost about $3.394
+at equal runtime or $4.243 at 25% longer, before overhead. This secondary public
+reference is not a billing receipt or evidence that fallback occurred.
+
 The [on-demand pilot](https://github.com/openclaw/openclaw/actions/runs/35549787290) measured the two critical compact jobs at 561/816 seconds on Blacksmith versus 755/1259 seconds on `c8i.4xlarge`: 35%/54% slower. Full Gateway-core failed on AWS at every tested worker count. Cron scaled from 156 to 138 seconds on `c8i.8xlarge` and 126 to 110 seconds on `c8a.8xlarge` at 8 versus 16 workers, but lacks a matching Blacksmith control. Checks, artifact builds, extensions, and UI have no pilot comparison.
+
+The pilot's compact comparisons had no runtime-build phase, so retaining builds
+does not qualify their replacement. The AMD candidate requires fresh complete
+job measurements. Its Gateway failure was the 64-target retained-history-reader
+fixture timing out, while NVMe variants failed an overlay-mount verifier before
+tests. Current fixture seeding skips unrelated maintenance; only a fresh AWS run
+can establish that it resolves the earlier timeout.
 
 The opt-in `runson` profile derives from hybrid and extracts the three `core-runtime-cron-parallel-*` children into one serial job on `c8i.8xlarge`: 32 vCPUs, 64 GiB RAM, `ubuntu24-full-x64`, and an 80 GB gp3 root. On the retained cron comparison inventory, all 258 files kept their two-worker job and group ceilings, and the source Blacksmith jobs retained their other children. RunsOn inherits hybrid's current splitting and packing before adding its cron row. Current inventory counts and pricing are recorded in [measured compact packing](/ci/routing-costs#measured-compact-packing); the earlier fixed nine-to-four projection is not a universal result. The pilot's eight-worker, 156-second cron wall remains historical context, while the complete two-worker comparison below owns the available provider evidence.
 
@@ -149,7 +193,7 @@ The immutable nine-job calibration cohort fits four jobs with canonical forecast
 
 Compact counts include dist descriptors; broad-PR Node counts include 40 extension rows. RunsOn adds one cron job to the hybrid plan. All counts stay inside the unchanged 70/130/90 caps. Together, current Node and extension packing remove a net nine setups from a broad PR: an estimated 6.75–9 Blacksmith 8-class minutes, or $0.108–$0.144 before runtime interactions. Main adds one setup, approximately 0.75–1 minute or $0.012–$0.016. These counts and costs are planner arithmetic, not native performance acceptance. Final measurements are recorded in [PR #155403](https://github.com/openclaw/openclaw/pull/155403).
 
-Ordinary main still does not select AWS. The admitted main-shaped qualification can select RunsOn and excludes comparison controls. Its initial preflight stays hosted until authorization. Qualifications retain their coverage shape on reruns while using hosted routing, resource policies and deadlines; raw GitHub context continues to own authentication, concurrency and cache publication.
+These historical counts predate the expanded class routing above. The repository variable remains unchanged; configuring `runson` now admits canonical main first attempts. The admitted main-shaped qualification can select RunsOn and excludes comparison controls. Its initial preflight stays hosted until authorization. Qualifications retain their coverage shape on reruns while using hosted routing, resource policies and deadlines; raw GitHub context continues to own authentication, concurrency and cache publication.
 
 ## Whole-run acceptance
 

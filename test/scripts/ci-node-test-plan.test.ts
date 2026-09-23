@@ -625,7 +625,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     (compactMode) => {
       const hybrid = getCommittedCompactPlan(compactMode, "hybrid");
       const runson = getCommittedCompactPlan(compactMode, "runson");
-      const routed = runson.filter((job) => job.runner === "runson-c8i-8xlarge");
+      const routed = runson.filter((job) => job.runner === "runson-c8i-2xlarge");
       expect(routed).toHaveLength(1);
       expect(routed[0]).toMatchObject({
         planConcurrency: 1,
@@ -652,7 +652,25 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           .toSorted((a, b) => a.shard_name.localeCompare(b.shard_name));
       // Coverage and the complete executor contract survive the provider move.
       expect(orderedGroups(runson)).toEqual(orderedGroups(hybrid));
-      expect(runson.filter((job) => job.runner !== "runson-c8i-8xlarge")).toEqual(
+      const capacityRows = runson.filter((job) => job.runner === "runson-c8a-4xlarge");
+      expect(capacityRows.length).toBeGreaterThan(0);
+      for (const job of capacityRows) {
+        expect(job.requiresDist).toBe(false);
+        expect(job.pretestBuildMode).toBeUndefined();
+        expect(job.groups.every((group) => !group.requiresDist && !group.pretestBuildMode)).toBe(
+          true,
+        );
+      }
+      expect(
+        runson
+          .filter((job) => job.runner !== "runson-c8i-2xlarge")
+          .map((job) =>
+            Object.assign({}, job, {
+              runner:
+                job.runner === "runson-c8a-4xlarge" ? "blacksmith-32vcpu-ubuntu-2404" : job.runner,
+            }),
+          ),
+      ).toEqual(
         hybrid
           .flatMap((job) => {
             const groups = job.groups.filter((group) => !cronNames.has(group.shard_name));
@@ -943,7 +961,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         .flatMap((group) => group.includePatterns ?? [])
         .toSorted(),
     ).toEqual(targets.toSorted());
-    expect(runson.filter((job) => job.runner === "runson-c8i-8xlarge")).toMatchObject([
+    expect(runson.filter((job) => job.runner === "runson-c8i-2xlarge")).toMatchObject([
       { groups: [{ includePatterns: [cronTarget] }], planConcurrency: 1 },
     ]);
     expect(

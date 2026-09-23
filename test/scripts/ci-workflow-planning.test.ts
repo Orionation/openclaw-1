@@ -282,7 +282,7 @@ function runCiManifestFixture(options: {
                 OPENCLAW_CI_TEST_PROOF_TIER: String(options.includeProofTests),
               },
               requiresDist: false,
-              runner: runson ? "runson-c8i-8xlarge" : "ubuntu-24.04",
+              runner: runson ? "runson-c8i-2xlarge" : "ubuntu-24.04",
               shardName: runson ? "changed-runson-cron" : "bundled-node-plan",
             }];
           };
@@ -703,6 +703,7 @@ function runRunnerProfileFixture(options: {
   headRepository?: string;
   repository?: string;
   runAttempt?: number;
+  ref?: string;
   requestedProfile?: "default" | "hybrid" | "runson";
   ciShape?: "default" | "main";
   qualificationDispatch?: boolean;
@@ -736,6 +737,7 @@ function runRunnerProfileFixture(options: {
         AUTHOR_ASSOCIATION: options.authorAssociation ?? "",
         CONFIGURED_RUNNER_PROFILE: options.configuredProfile ?? "",
         GITHUB_EVENT_NAME: options.eventName,
+        GITHUB_REF: options.ref ?? "refs/heads/main",
         GITHUB_OUTPUT: outputPath,
         GITHUB_REPOSITORY: options.repository ?? "openclaw/openclaw",
         HEAD_REPOSITORY: options.headRepository ?? options.repository ?? "openclaw/openclaw",
@@ -3364,7 +3366,18 @@ describe("ci workflow guards", () => {
         { name: "returning-contributor fork", expected: "github", headRepository: "fork/openclaw" },
         { name: "untrusted author", expected: "github", authorAssociation: "NONE" },
         { name: "noncanonical repository", expected: "github", repository: "fork/openclaw" },
-        { name: "push", expected: "hybrid", eventName: "push" as const },
+        {
+          name: "main push",
+          expected: "hybrid",
+          expectedNode: "runson",
+          eventName: "push" as const,
+        },
+        {
+          name: "branch push",
+          expected: "hybrid",
+          eventName: "push" as const,
+          ref: "refs/heads/feature",
+        },
         { name: "ordinary dispatch", expected: "github", eventName: "workflow_dispatch" as const },
         { name: "target without RunsOn contract", expected: "hybrid", targetSupportsRunson: false },
         {
@@ -3546,7 +3559,7 @@ describe("ci workflow guards", () => {
     }
   });
 
-  it("resolves admitted main qualification profiles without changing ordinary main routing", () => {
+  it("resolves admitted main qualification profiles and configured RunsOn main routing", () => {
     for (const [configuredProfile, backend] of (
       ["", "github", "blacksmith", "hybrid"] as const
     ).flatMap((configured) =>
@@ -3702,7 +3715,7 @@ describe("ci workflow guards", () => {
     expect(ordinaryMain.status, ordinaryMain.output).toBe(0);
     expect(ordinaryMain.outputs).toMatchObject({
       runner_profile: "hybrid",
-      node_runner_backend: "hybrid",
+      node_runner_backend: "runson",
       ci_qualification: "false",
       ci_shape: "default",
       qualification_runner_backend: "",
@@ -3897,7 +3910,7 @@ describe("ci workflow guards", () => {
       expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "qualification Node rows"),
     ).include as Record<string, unknown>[];
     const cron = expectDefined(
-      rows.find((row) => row.runner === "runson-c8i-8xlarge"),
+      rows.find((row) => row.runner === "runson-c8i-2xlarge"),
       "RunsOn cron row",
     );
     expect(cron.env).toMatchObject({ OPENCLAW_VITEST_MAX_WORKERS: "2" });
@@ -3924,7 +3937,7 @@ describe("ci workflow guards", () => {
       expectDefined(ordinaryPr.outputs.checks_node_core_nondist_matrix, "ordinary PR Node rows"),
     ).include as Record<string, unknown>[];
     expect(rows).toHaveLength(ordinaryRows.length + 2);
-    expect(ordinaryRows.some((row) => row.runner === "runson-c8i-8xlarge")).toBe(true);
+    expect(ordinaryRows.some((row) => row.runner === "runson-c8i-2xlarge")).toBe(true);
     expect(ordinaryRows.some((row) => String(row.check_name).endsWith("-control"))).toBe(false);
     const fastRows = JSON.parse(
       expectDefined(manifest.outputs.checks_fast_core_matrix, "qualification fast checks"),
