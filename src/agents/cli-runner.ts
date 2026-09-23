@@ -242,8 +242,8 @@ async function runCliAgentInternal(
   // Preparation replaced the caller's agentId with the session-resolved
   // execution owner; publish that fact so run/harness diagnostic events
   // attribute to the owner that actually executes, like the prepared
-  // model-call events already do.
-  diagnosticLifecycle?.setExecutionOwner(context.params.agentId);
+  // model-call events already do. Commentary also needs its effective config.
+  diagnosticLifecycle?.setExecutionContext(context.params);
   return await settlePreparedCliRun({
     context,
     diagnosticLifecycle,
