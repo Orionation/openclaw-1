@@ -4,6 +4,20 @@ import type { Message } from "../../llm/types.js";
 import { assertExperienceReviewDecision } from "./experience-review-decision.test-support.js";
 
 type DecisionInput = Parameters<typeof assertExperienceReviewDecision>[0];
+const workshopTool = {
+  id: "openclaw:core:skill_workshop",
+  name: "skill_workshop",
+  source: "openclaw",
+};
+function workshopResult(callId: string, text: string, isError = false) {
+  return makeTextToolResult(
+    callId,
+    "tool_call",
+    JSON.stringify({ tool: workshopTool, result: { content: [{ type: "text", text }] } }),
+    isError,
+    0,
+  );
+}
 function abstention(): DecisionInput {
   const messages: Message[] = [
     makeTextToolResult("history", "exec", "observed recovery", false, 0),
@@ -21,7 +35,7 @@ function abstention(): DecisionInput {
     observation: {
       requests: [
         {
-          toolNames: ["exec", "read", "skill_workshop"],
+          toolNames: ["exec", "read", "tool_search", "tool_describe", "tool_call"],
           outputs: messages
             .filter((message) => message.role === "toolResult")
             .map((message) =>
@@ -44,18 +58,14 @@ function proposal(): DecisionInput {
   input.proposals = [{ id: "proposal-1", status: "pending" }];
   input.outcome = { ...input.outcome!, outcome: "proposed", proposalId: "proposal-1" };
   input.observation.toolCalls = [
-    { type: "toolCall", id: "create", name: "skill_workshop", arguments: { action: "create" } },
-  ];
-  input.observation.toolResults = [
     {
-      role: "toolResult",
-      toolCallId: "create",
-      toolName: "skill_workshop",
-      content: [{ type: "text", text: "Created proposal-1" }],
-      isError: false,
-      timestamp: 0,
+      type: "toolCall",
+      id: "create",
+      name: "tool_call",
+      arguments: { id: workshopTool.id, args: { action: "create" } },
     },
   ];
+  input.observation.toolResults = [workshopResult("create", "Created proposal-1")];
   return input;
 }
 
@@ -71,12 +81,10 @@ describe("Workshop live decision acceptance", () => {
       input.observation.toolCalls.push({
         type: "toolCall",
         id: "prepare",
-        name: "skill_workshop",
-        arguments: { action, name: "existing-skill" },
+        name: "tool_call",
+        arguments: { id: workshopTool.id, args: { action, name: "existing-skill" } },
       });
-      input.observation.toolResults.push(
-        makeTextToolResult("prepare", "skill_workshop", "Existing skill content", false, 0),
-      );
+      input.observation.toolResults.push(workshopResult("prepare", "Existing skill content"));
       expect(assertExperienceReviewDecision(input)).toBe("abstained");
     },
   );
@@ -101,7 +109,7 @@ describe("Workshop live decision acceptance", () => {
       },
     ],
     [
-      "missing Workshop tool",
+      "missing Workshop dispatcher",
       (input: DecisionInput) => {
         input.observation.requests[0]!.toolNames = ["exec", "read"];
       },
@@ -124,20 +132,19 @@ describe("Workshop live decision acceptance", () => {
         input.observation.toolCalls.push({
           type: "toolCall",
           id: "read",
-          name: "skill_workshop",
-          arguments: { action: "create", name: "existing-skill" },
+          name: "tool_call",
+          arguments: {
+            id: workshopTool.id,
+            args: { action: "create", name: "existing-skill" },
+          },
         });
-        input.observation.toolResults.push(
-          makeTextToolResult("read", "skill_workshop", "Existing skill content", false, 0),
-        );
+        input.observation.toolResults.push(workshopResult("read", "Existing skill content"));
       },
     ],
     [
       "rejected tool",
       (input: DecisionInput) => {
-        input.observation.toolResults.push(
-          makeTextToolResult("rejected", "skill_workshop", "name required", true, 0),
-        );
+        input.observation.toolResults.push(workshopResult("rejected", "name required", true));
       },
     ],
   ] as const)("rejects %s even when the proposal count is zero", (_label, corrupt) => {
@@ -175,6 +182,62 @@ describe("Workshop live decision acceptance", () => {
     ],
   ] as const)("rejects %s even when one proposal ID is reported", (_label, corrupt) => {
     const input = proposal();
+    corrupt(input);
+    expect(() => assertExperienceReviewDecision(input)).toThrow();
+  });
+});
+
+describe("Workshop discovery receipt acceptance", () => {
+  function discoveredProposal() {
+    const input = proposal();
+    input.observation.toolCalls.unshift({
+      type: "toolCall",
+      id: "discover",
+      name: "tool_search",
+      arguments: { query: "skill_workshop", limit: 1 },
+    });
+    input.observation.toolResults.unshift(
+      makeTextToolResult("discover", "tool_search", JSON.stringify([workshopTool]), false, 0),
+    );
+    return input;
+  }
+
+  it("accepts a proposal with paired discovery and mutation receipts", () => {
+    expect(assertExperienceReviewDecision(discoveredProposal())).toBe("proposed");
+  });
+
+  it.each([
+    [
+      "unpaired discovery",
+      (input: DecisionInput) => {
+        input.observation.toolResults.shift();
+      },
+    ],
+    [
+      "foreign target",
+      (input: DecisionInput) => {
+        input.observation.toolCalls[1]!.arguments = {
+          id: "openclaw:core:exec",
+          args: { action: "create" },
+        };
+      },
+    ],
+    [
+      "foreign receipt",
+      (input: DecisionInput) => {
+        input.observation.toolResults[1]!.content = [
+          {
+            type: "text",
+            text: JSON.stringify({
+              tool: { id: "openclaw:core:exec", name: "exec", source: "openclaw" },
+              result: { content: [{ type: "text", text: "Created proposal-1" }] },
+            }),
+          },
+        ];
+      },
+    ],
+  ] as const)("rejects %s despite reported proposal progress", (_label, corrupt) => {
+    const input = discoveredProposal();
     corrupt(input);
     expect(() => assertExperienceReviewDecision(input)).toThrow();
   });

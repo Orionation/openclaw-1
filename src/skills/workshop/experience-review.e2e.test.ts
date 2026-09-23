@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import { text as readText } from "node:stream/consumers";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   writeOpenAiResponsesSse,
@@ -23,7 +24,7 @@ import {
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
-import { readSkillCuratorReviewStatus } from "./collection-review-state.js";
+import { readSkillCuratorReviewStatus } from "./collection-review-state.test-support.js";
 import { assertExperienceReviewDecision } from "./experience-review-decision.test-support.js";
 import { readExperienceReviewMessageText } from "./experience-review-message-text.test-support.js";
 import { observeExperienceReview } from "./experience-review-observation.test-support.js";
@@ -74,12 +75,17 @@ afterEach(async () => {
   await tempDirs.cleanup();
 });
 
-function writeToolCall(response: ServerResponse, args: Record<string, unknown>): void {
+function writeToolCall(
+  response: ServerResponse,
+  name: string,
+  args: Record<string, unknown>,
+  callId: string,
+): void {
   const item = {
     type: "function_call",
-    id: "fc_workshop_contract",
-    call_id: "call_workshop_contract",
-    name: "skill_workshop",
+    id: `fc_${callId}`,
+    call_id: callId,
+    name,
     arguments: JSON.stringify(args),
     status: "completed",
   };
@@ -99,13 +105,25 @@ function writeToolCall(response: ServerResponse, args: Record<string, unknown>):
     {
       type: "response.completed",
       response: {
-        id: "resp_workshop_contract_tool",
+        id: `resp_${callId}`,
         status: "completed",
         output: [item],
         usage: { input_tokens: 10, output_tokens: 10, total_tokens: 20 },
       },
     },
   ]);
+}
+
+function readToolOutput(request: Request | undefined, callId: string): string {
+  const outputs = request?.input?.filter(
+    (item) => item.type === "function_call_output" && item.call_id === callId,
+  );
+  expect(outputs).toHaveLength(1);
+  const output = outputs![0]!.output;
+  if (typeof output !== "string") {
+    throw new Error(`Expected text output for ${callId}`);
+  }
+  return output;
 }
 
 describe("Workshop draft-only review through the real provider and tool owners", () => {
@@ -260,6 +278,10 @@ describe("Workshop draft-only review through the real provider and tool owners",
     async (scenario) => {
       const requests: Request[] = [];
       const handlerErrors: unknown[] = [];
+      let workshopToolId: string | undefined;
+      const attemptsMutation = scenario === "proposed" || scenario === "rejected";
+      const workshopArgs = scenario === "proposed" ? createArgs : { action: "create" };
+      const searchArgs = { query: "skill_workshop", limit: 1 };
       await withServer(
         (request, response) => {
           void (async () => {
@@ -268,13 +290,35 @@ describe("Workshop draft-only review through the real provider and tool owners",
               return;
             }
             requests.push(JSON.parse(await readText(request)) as Request);
-            if (scenario === "failed" || requests.length > 2) {
+            if (scenario === "failed" || requests.length > 3) {
               response.writeHead(400, { "content-type": "application/json" });
               response.end(JSON.stringify({ error: { message: "Controlled provider rejection" } }));
               return;
             }
-            if (requests.length === 1 && (scenario === "proposed" || scenario === "rejected")) {
-              writeToolCall(response, scenario === "proposed" ? createArgs : { action: "create" });
+            if (requests.length === 1 && attemptsMutation) {
+              writeToolCall(response, "tool_search", searchArgs, "call_workshop_discovery");
+              return;
+            }
+            if (requests.length === 2 && attemptsMutation) {
+              const candidates: unknown = JSON.parse(
+                readToolOutput(requests[1], "call_workshop_discovery"),
+              );
+              expect(candidates).toHaveLength(1);
+              const descriptor: unknown = Array.isArray(candidates) ? candidates[0] : undefined;
+              if (!isRecord(descriptor) || typeof descriptor.id !== "string") {
+                throw new Error("Expected a discovered Workshop tool descriptor");
+              }
+              expect(descriptor).toMatchObject({ name: "skill_workshop", source: "openclaw" });
+              expect(descriptor.id).toMatch(/\S/);
+              expect(descriptor.description).toMatch(/\S/);
+              expect(descriptor.input).toContain("action");
+              workshopToolId = descriptor.id;
+              writeToolCall(
+                response,
+                "tool_call",
+                { id: workshopToolId, args: workshopArgs },
+                "call_workshop_contract",
+              );
               return;
             }
             writeOpenAiResponsesText(response, {
@@ -338,7 +382,7 @@ describe("Workshop draft-only review through the real provider and tool owners",
               await expect(run).rejects.toThrow(
                 scenario === "failed"
                   ? "provider rejected the request schema or tool payload"
-                  : "Skill Workshop failed",
+                  : "Tool Call failed",
               );
             } else {
               observation = await run;
@@ -351,11 +395,33 @@ describe("Workshop draft-only review through the real provider and tool owners",
           expect(foregroundFingerprint()).toBe(storedBefore);
 
           expect(handlerErrors).toEqual([]);
-          expect(requests).toHaveLength(scenario === "proposed" || scenario === "rejected" ? 2 : 1);
+          expect(requests).toHaveLength(attemptsMutation ? 3 : 1);
           expect(requests[0]?.model).toBe(modelId);
           expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(
-            expect.arrayContaining(["exec", "read", "skill_workshop"]),
+            expect.arrayContaining(["exec", "read", "tool_search", "tool_describe", "tool_call"]),
           );
+          expect(requests[0]?.tools?.map((tool) => tool.name)).not.toContain("skill_workshop");
+          if (attemptsMutation) {
+            expect(workshopToolId).toMatch(/\S/);
+            for (const [index, name, callId, args] of [
+              [1, "tool_search", "call_workshop_discovery", searchArgs],
+              [
+                2,
+                "tool_call",
+                "call_workshop_contract",
+                { id: workshopToolId, args: workshopArgs },
+              ],
+            ] as const) {
+              expect(requests[index]?.input).toContainEqual(
+                expect.objectContaining({
+                  type: "function_call",
+                  call_id: callId,
+                  name,
+                  arguments: JSON.stringify(args),
+                }),
+              );
+            }
+          }
           // Request IDs are rewritten for provider replay. Compare the actual output bodies.
           expect(
             requests[0]?.input
@@ -398,11 +464,7 @@ describe("Workshop draft-only review through the real provider and tool owners",
               code: "ENOENT",
             });
             expect(outcome).toMatchObject({ outcome: "proposed", proposalId: proposal.id });
-            const toolOutput = requests[1]?.input?.find(
-              (item) =>
-                item.type === "function_call_output" && item.call_id === "call_workshop_contract",
-            );
-            expect(toolOutput?.output).toContain(proposal.id);
+            expect(readToolOutput(requests[2], "call_workshop_contract")).toContain(proposal.id);
           } else {
             expect(proposals).toEqual([]);
             expect(progress.mutationCount).toBe(0);
@@ -410,11 +472,7 @@ describe("Workshop draft-only review through the real provider and tool owners",
               outcome: failedReview ? "failed" : "nothing",
             });
             if (scenario === "rejected") {
-              const toolOutput = requests[1]?.input?.find(
-                (item) =>
-                  item.type === "function_call_output" && item.call_id === "call_workshop_contract",
-              );
-              expect(toolOutput?.output).toContain("required");
+              expect(readToolOutput(requests[2], "call_workshop_contract")).toContain("required");
             }
           }
           if (!failedReview) {
