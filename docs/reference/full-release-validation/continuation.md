@@ -21,9 +21,25 @@ Inspect or continue an existing parent:
 
 ```bash
 pnpm frv status --run <parent-run-id>
+pnpm frv rerun-failed --run <parent-run-id> [--child <key>] [--dry-run]
 pnpm frv continue --failed --run <parent-run-id>
 pnpm frv verify --run <successful-parent-run-id>
+pnpm frv prioritize --run <parent-run-id> [--out <record>] [--dry-run]
+pnpm frv prioritize --restore <record> [--dry-run]
 ```
+
+`prioritize` gives an active parent hosted-runner priority (see
+[Release priority](/reference/RELEASING#release-priority)); `continue --failed`
+and `verify` release it once the parent seals.
+
+`rerun-failed` wraps GitHub's failed-job rerun for one child (`--child normalCi`,
+`releaseChecks`, `pluginPrerelease`, `productPerformance`, `npmTelegram`, or
+`artifact:npm`) or for every failed child, on the exact run the immutable plan
+recorded. It returns once the new attempt is observable and never touches the
+parent; run `continue --failed` afterwards to seal. The controller accepts the
+latest attempt of a child dispatched for the same parent attempt, so operator
+reruns (this command or the GitHub UI) between controller steps do not fail the
+seal; only the parent attempt stays controller-exact.
 
 `continue --failed` waits for active child attempts instead of starting a
 duplicate. Once every active attempt is terminal, it reruns failed child jobs

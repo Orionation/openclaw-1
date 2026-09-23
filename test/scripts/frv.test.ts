@@ -5,6 +5,7 @@ import {
   inspectContinuation,
   loadPlan,
   preflightContinuation,
+  rerunFailedChildren,
 } from "../../scripts/frv.mjs";
 import {
   releaseChildSpec,
@@ -971,7 +972,6 @@ describe("FRV same-parent recovery", () => {
     ["missing", 1, undefined, "101 run attempt must be a positive integer"],
     ["zero", 1, 0, "101 run attempt must be a positive integer"],
     ["regressed", 2, 1, "rerun source 101 attempt regressed"],
-    ["skipped", 1, 3, "controller-owned run 101 advanced past attempt 2"],
   ])("rejects a %s child attempt", async (_label, sourceAttempt, observedAttempt, error) => {
     const scenario = rerunScenario({
       childAfter: [[observedAttempt, "success"]],
@@ -1040,28 +1040,45 @@ describe("FRV same-parent recovery", () => {
     expect(hardRunReads).toBe(0);
   });
 
-  it.each([
-    ["child", "101"],
-    ["parent", "77"],
-  ])("rejects %s attempt advancement before verification", async (target, targetRunId) => {
-    const advancingStates = [
-      [2, null],
-      [2, "success"],
-      [3, "success"],
-    ] satisfies ScenarioState[];
-    const scenario = rerunScenario(
-      target === "child"
-        ? { childAfter: advancingStates }
-        : {
-            childSource: [1, "success"],
-            parentAfter: advancingStates,
-            parentSource: [1, "failure"],
-          },
-    );
+  it("rejects parent attempt advancement before verification", async () => {
+    const scenario = rerunScenario({
+      childSource: [1, "success"],
+      parentAfter: [
+        [2, null],
+        [2, "success"],
+        [3, "success"],
+      ],
+      parentSource: [1, "failure"],
+    });
     await expect(continueFailed(plan([scenario.selected]), "77", scenario.client)).rejects.toThrow(
-      `controller-owned run ${targetRunId} advanced past attempt 2`,
+      "controller-owned run 77 advanced past attempt 2",
     );
     expect(scenario.counters.verifies).toBe(0);
+  });
+
+  it.each([
+    ["an operator rerun that skipped past the controller's attempt", [[3, "success"]]],
+    [
+      "a child that advanced while the controller waited",
+      [
+        [2, null],
+        [2, "success"],
+        [3, "success"],
+      ],
+    ],
+  ])("seals the latest child attempt after %s", async (_label, childAfter) => {
+    const verify = vi.fn(async () => "{}");
+    const scenario = rerunScenario({ childAfter: childAfter as ScenarioState[] });
+    await withFastPolling(() =>
+      expect(
+        continueFailed(plan([scenario.selected]), "77", { ...scenario.client, verify }),
+      ).resolves.toMatchObject({ action: "reran-parent", finalRunId: "77" }),
+    );
+    expect(scenario.counters.posts.child).toBe(1);
+    expect(verify).toHaveBeenCalledWith("77", expect.anything(), expect.any(Number), {
+      "77": 2,
+      "101": 3,
+    });
   });
 
   it("freezes every selected and reused parent attempt for final verification", async () => {
@@ -1237,5 +1254,73 @@ describe("FRV strict verifier", () => {
     await expect(
       client.verifySeal("77", executionPlanArtifact(), Date.now() + 30_000, attempts),
     ).rejects.toThrow("verification failed");
+  });
+});
+
+describe("FRV per-child failed-job reruns", () => {
+  function fixture(parentConclusion: string | null = "failure") {
+    const first = child("normalCi", "101");
+    const second = child("pluginPrerelease", "202");
+    const childRuns = new Map([
+      ["101", { attempt: 1, conclusion: "failure" }],
+      ["202", { attempt: 1, conclusion: "failure" }],
+    ]);
+    const reruns: string[] = [];
+    const client = {
+      ...controllerClient([first, second], childRuns, { attempt: 1, conclusion: parentConclusion }),
+      rerunFailed: async (runId: string) => {
+        reruns.push(runId);
+        childRuns.set(runId, { attempt: 2, conclusion: null });
+      },
+      rerunParent: vi.fn(),
+      verify: vi.fn(),
+    };
+    return { childRuns, client, plan: plan([first, second]), reruns };
+  }
+
+  it("reruns only the named child's failed jobs and hands off to continue", async () => {
+    const { client, plan: selectedPlan, reruns } = fixture();
+    await expect(
+      withFastPolling(() =>
+        rerunFailedChildren(selectedPlan, "77", client, { child: "pluginPrerelease" }),
+      ),
+    ).resolves.toMatchObject({
+      action: "reran-children",
+      children: [{ key: "pluginPrerelease", runAttempt: 2, runId: "202" }],
+      next: "pnpm frv continue --failed --run 77",
+    });
+    expect(reruns).toEqual(["202"]);
+    expect(client.rerunParent).not.toHaveBeenCalled();
+    expect(client.verify).not.toHaveBeenCalled();
+  });
+
+  it("reruns every failed child without a child filter", async () => {
+    const { client, plan: selectedPlan, reruns } = fixture();
+    await withFastPolling(() => rerunFailedChildren(selectedPlan, "77", client));
+    expect(reruns.toSorted()).toEqual(["101", "202"]);
+  });
+
+  it("does not mutate during dry run or when nothing failed", async () => {
+    const { childRuns, client, plan: selectedPlan, reruns } = fixture();
+    await expect(
+      rerunFailedChildren(selectedPlan, "77", client, { dryRun: true }),
+    ).resolves.toMatchObject({ action: "would-rerun", children: ["normalCi", "pluginPrerelease"] });
+    childRuns.set("101", { attempt: 1, conclusion: "success" });
+    childRuns.set("202", { attempt: 1, conclusion: "success" });
+    await expect(rerunFailedChildren(selectedPlan, "77", client)).resolves.toMatchObject({
+      action: "nothing-to-rerun",
+    });
+    expect(reruns).toEqual([]);
+  });
+
+  it("rejects unknown children and active parents", async () => {
+    const { client, plan: selectedPlan } = fixture();
+    await expect(
+      rerunFailedChildren(selectedPlan, "77", client, { child: "releaseChecks" }),
+    ).rejects.toThrow("child releaseChecks is not selected by the immutable plan of 77");
+    const active = fixture(null);
+    await expect(rerunFailedChildren(active.plan, "77", active.client)).rejects.toThrow(
+      "parent 77 is still collecting",
+    );
   });
 });

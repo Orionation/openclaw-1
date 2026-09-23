@@ -40,9 +40,24 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   instead of healing broader main.
 - Validate provider secrets before dispatching expensive full release matrices.
 - Linux (`ubuntu`) cross-OS lanes gate publication for beta, stable, and full.
-  Windows/macOS cross-OS lanes run in parallel as advisory coverage. Record
-  their actual pass/fail conclusions; failures do not block Release Decision,
-  npm publication, or `pnpm release:candidate`. Keep normal CI, npm
+  Windows/macOS cross-OS lanes, the CI child's `checks-windows-node-test-*`
+  shards, and its `macos-swift (...)` app lanes run in parallel as advisory
+  coverage. Record their actual pass/fail conclusions (`advisoryJobs` in the
+  manifest, `::warning::` naming the lane in Release Decision); failures do not
+  block Release Decision, npm publication, the publish preflight, or
+  `pnpm release:candidate`. Fix them in parallel; never hold npm for them.
+- Release priority: release runs always beat PR-side hosted-runner work. The
+  repo variable `OPENCLAW_RELEASE_PRIORITY_RUN` names the active FRV parent;
+  `pnpm ci:full-release` sets it on dispatch and clears it after the seal, as do
+  `pnpm frv continue --failed` and `pnpm frv verify`. While set, `CI`, Security
+  Review, Auto response, PR context and evidence, Labeler, CodeQL, Periphery,
+  Workflow Sanity, ClawSweeper Dispatch, and Maintainer Command Reactions skip
+  at the job level unless dispatched or on a `release*/` branch; deferred CI
+  fails its gate with `Deferred for release <run>`. When release children starve
+  behind queued PR runs, `pnpm frv prioritize --run <parent>` cancels the queued
+  non-release runs of those workflows and records them; after the seal,
+  `pnpm frv prioritize --restore <record>` clears the variable and reruns the
+  cancelled and deferred runs. Never leave the variable set after a release. Keep normal CI, npm
   qualification, Docker, Package Acceptance, performance, and soak gates intact.
 - macOS app signing/notarization/appcast and Windows Hub asset promotion run
   in parallel with or after npm publication and never delay npm or GitHub
@@ -90,7 +105,7 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   validation inputs remain exact. Newer child attempts replace matching jobs;
   jobs absent from a newer attempt carry forward. A duplicate job identity,
   missing attempt, regressed attempt, or changed tuple fails closed.
-- Use `pnpm frv status|continue --failed|verify` for attempt-aware recovery.
+- Use `pnpm frv status|rerun-failed|continue --failed|verify` for attempt-aware recovery.
   The controller is stateless: the immutable execution plan, exact GitHub run
   attempts, Diagnostic Drain, and final manifest are the only authorities. It
   never writes a tag, package, registry entry, release candidate, or
@@ -197,6 +212,11 @@ until their dependent enforcement changes land.
   mutation is sent exactly once; ambiguous transport failures trigger only
   bounded read reconciliation. The controller never repeats the mutation, and
   provenance drift fails closed.
+- To retry one child's failed jobs without sealing yet, use
+  `pnpm frv rerun-failed --run <parent-run-id> --child <key>` (omit `--child`
+  for every failed child; `--dry-run` previews). It wraps GitHub's failed-job
+  rerun on the exact planned child run and hands off to `continue --failed`,
+  which adopts the latest child attempt for the same parent attempt.
 - Inspect without mutation:
 
   ```bash

@@ -1543,6 +1543,20 @@ function isReleaseChecksChild(key) {
   return ["releaseChecks", "releaseChecksIndependent", "releaseChecksCandidate"].includes(key);
 }
 
+// Native-app lanes of the CI child: Windows Node shards and the macOS Swift
+// build/test phases. Their conclusions are recorded, never publication gates.
+const ADVISORY_CI_JOB_PATTERN = /^(?:checks-windows-node-test-|macos-swift \()/u;
+
+export function isReleaseJobAdvisory({ childKey, jobName, releaseProfile, workflowRef }) {
+  if (childKey === "normalCi") {
+    return ADVISORY_CI_JOB_PATTERN.test(jobName);
+  }
+  return (
+    isReleaseChecksChild(childKey) &&
+    isReleaseCheckJobAdvisory({ jobName, releaseProfile, workflowRef })
+  );
+}
+
 function isAdvisoryChild(key, releaseProfile) {
   return key === "npmTelegram" || (key === "productPerformance" && releaseProfile === "beta");
 }
@@ -1555,15 +1569,37 @@ function failedJobsForPolicy(child, releaseProfile, workflowRef) {
     ) {
       return false;
     }
-    if (isReleaseChecksChild(child.key)) {
-      return !isReleaseCheckJobAdvisory({
-        jobName: stringValue(job.name),
-        releaseProfile,
-        workflowRef,
-      });
-    }
-    return !isAdvisoryChild(child.key, releaseProfile);
+    return isReleaseChecksChild(child.key) || child.key === "normalCi"
+      ? !isReleaseJobAdvisory({
+          childKey: child.key,
+          jobName: stringValue(job.name),
+          releaseProfile,
+          workflowRef,
+        })
+      : !isAdvisoryChild(child.key, releaseProfile);
   });
+}
+
+export function releaseAdvisoryJobFailures(payload) {
+  return Object.entries(payload.children ?? {}).flatMap(([childKey, child]) =>
+    (child.timing?.jobs ?? [])
+      .filter(
+        (job) =>
+          job.status === "completed" &&
+          !SUCCESSFUL_JOB_CONCLUSIONS.has(String(job.conclusion ?? "")) &&
+          isReleaseJobAdvisory({
+            childKey,
+            jobName: String(job.name ?? ""),
+            releaseProfile: payload.releaseProfile,
+            workflowRef: payload.workflowRef,
+          }),
+      )
+      .map((job) => ({ child: childKey, conclusion: job.conclusion, job: job.name, url: job.url })),
+  );
+}
+
+export function formatAdvisoryJobFailure(failure) {
+  return `${failure.child} advisory lane ${failure.job} ended ${failure.conclusion}; fix it in parallel, it does not block npm/ClawHub publication${failure.url ? ` (${failure.url})` : ""}`;
 }
 
 export function terminalPolicyPass(child, releaseProfile, workflowRef) {
@@ -2475,6 +2511,9 @@ function releaseStateDetailLines(payload, maxItems = MAX_SUMMARY_ISSUES) {
     Math.max(0, payload.errors.length - normalizedMax);
   if (omitted > 0) {
     lines.push(`- ${omitted} additional blocker/error item(s) omitted`);
+  }
+  for (const failure of releaseAdvisoryJobFailures(payload)) {
+    lines.push(`- Advisory: ${formatAdvisoryJobFailure(failure)}`);
   }
   return lines;
 }

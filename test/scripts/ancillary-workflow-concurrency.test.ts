@@ -161,7 +161,7 @@ function subscribes(workflow: Workflow, github: Github): boolean {
 function expression(source: string, context: Record<string, unknown>): unknown {
   return runInNewContext(
     source.replace(
-      /\b(?:github|needs|steps)(?:\.[A-Za-z_][\w-]*)+/gu,
+      /\b(?:github|needs|steps|vars)(?:\.[A-Za-z_][\w-]*)+/gu,
       (reference) => `lookup(${JSON.stringify(reference)})`,
     ),
     {
@@ -178,6 +178,7 @@ function expression(source: string, context: Record<string, unknown>): unknown {
       format: (template: string, ...values: unknown[]) =>
         template.replace(/\{(\d+)\}/gu, (_match, index: string) => String(values[Number(index)])),
       always: () => true,
+      startsWith: (value: unknown, prefix: unknown) => String(value).startsWith(String(prefix)),
     },
   );
 }

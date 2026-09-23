@@ -36,15 +36,16 @@ permissions: {}
 
 jobs:
   label:
+    # Release priority: hosted-runner work defers while OPENCLAW_RELEASE_PRIORITY_RUN names an active Full Release Validation.
     if: >-
-      ${{
+      ${{ (vars.OPENCLAW_RELEASE_PRIORITY_RUN == '' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/release') || startsWith(github.base_ref, 'release')) && (
         github.event_name == 'pull_request_target' &&
         (
           github.event.action != 'edited' ||
           github.event.changes.title ||
           github.event.changes.base
         )
-      }}
+      ) }}
     permissions:
       contents: read
       pull-requests: write
@@ -852,7 +853,8 @@ jobs:
             core.info(`Processed ${processed} pull requests.`);
 
   label-issues:
-    if: github.event_name == 'issues'
+    # Release priority: hosted-runner work defers while OPENCLAW_RELEASE_PRIORITY_RUN names an active Full Release Validation.
+    if: (vars.OPENCLAW_RELEASE_PRIORITY_RUN == '' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/release') || startsWith(github.base_ref, 'release')) && (github.event_name == 'issues')
     permissions:
       contents: read
       issues: write

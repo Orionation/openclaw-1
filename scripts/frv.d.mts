@@ -32,6 +32,12 @@ export interface FrvClient {
   getRunAttempt: (runId: string, runAttempt: number) => Promise<Record<string, unknown>>;
   rerunFailed?: (runId: string) => Promise<unknown>;
   rerunParent?: (runId: string) => Promise<unknown>;
+  cancelRun?: (runId: string) => Promise<unknown>;
+  rerunRun?: (runId: string) => Promise<unknown>;
+  listRuns?: (query: string) => Promise<Record<string, unknown>[]>;
+  getVariable?: (name: string) => Promise<string>;
+  setVariable?: (name: string, value: string) => Promise<unknown>;
+  deleteVariable?: (name: string) => Promise<unknown>;
   verify?: (
     runId: string,
     plan: Record<string, unknown>,
@@ -49,6 +55,26 @@ export interface FrvClient {
 export type FrvConcreteClient = FrvClient &
   Required<Pick<FrvClient, "rerunFailed" | "rerunParent" | "verify" | "verifySeal">>;
 
+export function prioritizeRelease(
+  parentRunId: string,
+  client: Partial<FrvClient>,
+  options?: { dryRun?: boolean; outPath?: string },
+): Promise<Record<string, unknown>>;
+export function restoreReleasePriority(
+  recordPath: string,
+  client: Partial<FrvClient>,
+  options?: { dryRun?: boolean },
+): Promise<Record<string, unknown>>;
+export function clearReleasePriority(
+  client: Partial<FrvClient>,
+  parentRunId: string,
+): Promise<boolean>;
+export function rerunFailedChildren(
+  plan: Record<string, unknown>,
+  rootRunId: string,
+  client: FrvClient,
+  options?: { child?: string; dryRun?: boolean; operationDeadline?: number },
+): Promise<Record<string, unknown>>;
 export function inspectContinuation(
   plan: Record<string, unknown>,
   client: Pick<FrvClient, "getAttemptJobs" | "getRun" | "repository">,

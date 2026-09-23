@@ -49,6 +49,7 @@ import {
 import { requireOptionArgument } from "./lib/arg-utils.mts";
 import { execPlainGh } from "./lib/plain-gh.mjs";
 import { parseReleaseContextRef, resolveReleaseContextIdentity } from "./lib/release-context.mjs";
+import { RELEASE_PRIORITY_VARIABLE } from "./lib/release-priority.mjs";
 import { validatePackageSourceRef } from "./package-source-preflight.mjs";
 
 const REPOSITORY = "openclaw/openclaw";
@@ -1372,6 +1373,34 @@ async function reopenDispatch(path: string, args: ReturnType<typeof parseArgs>, 
   }
 }
 
+// Release priority: the active parent holds hosted-runner priority until it seals.
+// The variable is advisory tooling state, so a failure here never fails validation.
+function setReleasePriority(parentRunId: string, dryRun: boolean, mode: "set" | "clear" = "set") {
+  const variableArgs = [RELEASE_PRIORITY_VARIABLE, "--repo", REPOSITORY];
+  try {
+    if (mode === "set") {
+      runGh(["variable", "set", ...variableArgs, "--body", parentRunId], { dryRun });
+    } else if (
+      dryRun ||
+      runGh([
+        "api",
+        `repos/${REPOSITORY}/actions/variables/${RELEASE_PRIORITY_VARIABLE}`,
+        "--jq",
+        ".value",
+      ]) === parentRunId
+    ) {
+      runGh(["variable", "delete", ...variableArgs], { dryRun });
+    } else {
+      return;
+    }
+    console.log(`Release priority ${mode}: ${RELEASE_PRIORITY_VARIABLE}=${parentRunId}`);
+  } catch (error) {
+    console.warn(
+      `Release priority ${mode} failed (${error instanceof Error ? error.message : String(error)}); use pnpm frv prioritize ${mode === "set" ? `--run ${parentRunId}` : "--restore <record>"}.`,
+    );
+  }
+}
+
 function readWorkflowRun(parentRunId: string, workflowSha: string) {
   if (!/^[1-9][0-9]*$/u.test(parentRunId)) {
     throw new Error("parent run ID must be a positive decimal");
@@ -2000,6 +2029,7 @@ async function main() {
       retain({ ...record, phase: "observed", run: observed });
       parentRunId = String(observed.id);
       console.log(`dispatch=observed: attempt=${observed.attempt}`);
+      setReleasePriority(parentRunId, args.dryRun);
     }
     if (parentRunId) {
       console.log(`Parent run: https://github.com/openclaw/openclaw/actions/runs/${parentRunId}`);
@@ -2012,6 +2042,7 @@ async function main() {
       }
       verifyReleaseEvidence(parentRunId, workflowSha, args.trustedWorkflowRef);
       evidenceVerified = true;
+      setReleasePriority(parentRunId, args.dryRun, "clear");
     }
   } catch (error) {
     operationError = error instanceof Error ? error : new Error(String(error));

@@ -19,15 +19,16 @@ permissions: {}
 
 jobs:
   auto-response:
+    # Release priority: hosted-runner work defers while OPENCLAW_RELEASE_PRIORITY_RUN names an active Full Release Validation.
     if: >-
-      ${{
+      ${{ (vars.OPENCLAW_RELEASE_PRIORITY_RUN == '' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/release') || startsWith(github.base_ref, 'release')) && (
         (github.event_name != 'issue_comment' || github.event.comment.user.type != 'Bot') &&
         (
           github.event_name != 'pull_request_target' ||
           (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
           (github.actor != 'clawsweeper[bot]' && github.actor != 'openclaw-clawsweeper[bot]')
         )
-      }}
+      ) }}
     permissions:
       contents: read
       issues: write
