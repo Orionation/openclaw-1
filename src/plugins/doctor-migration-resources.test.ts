@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { stateMigrations as canvasMigrations } from "../../extensions/canvas/doctor-contract-api.js";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { definePluginDoctorMigrationFromPlans } from "../plugin-sdk/doctor-migration-plan-adapter.js";
+import { loadBundledPluginFacade } from "../test-utils/bundled-plugin-public-surface.js";
 import { coercePluginDoctorContractModule } from "./doctor-contract-module.js";
 import type { PluginDoctorStateMigration } from "./doctor-contract-module.js";
 import { collectPluginDoctorMigrationBackupResources } from "./doctor-contract-registry.js";
@@ -10,6 +10,13 @@ import { clearPluginDoctorContractRegistryCache } from "./doctor-contract-regist
 import { collectPluginDoctorMigrationResources } from "./doctor-migration-resources.js";
 import { waitForPluginCacheRetirement } from "./plugin-cache.js";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
+
+let canvasMigrations: PluginDoctorStateMigration[];
+beforeAll(async () => {
+  ({ stateMigrations: canvasMigrations } = await loadBundledPluginFacade<{
+    stateMigrations: PluginDoctorStateMigration[];
+  }>({ pluginId: "canvas", artifactBasename: "doctor-contract-api.ts" }));
+});
 
 const tempDirs: string[] = [];
 let stateDir: string;
@@ -44,7 +51,9 @@ it("admits the actual bundled Canvas legacy migration with an honest recovery-se
   const migration = canvasMigrations.find(
     (entry) => entry.id === "canvas-custom-root-documents-to-core",
   );
-  if (!migration) throw new Error("Missing shipped Canvas migration");
+  if (!migration) {
+    throw new Error("Missing shipped Canvas migration");
+  }
   expect(migration.collectBackupResources).toBeUndefined();
   const detect = vi.spyOn(migration, "detectLegacyState");
   const migrate = vi.spyOn(migration, "migrateLegacyState");
@@ -114,7 +123,9 @@ it("preserves a declared inventory through the SDK plan adapter and contract coe
   const migration = definePluginDoctorMigrationFromPlans(declaration);
   const contract = coercePluginDoctorContractModule({ stateMigrations: [migration] });
   const coerced = contract?.stateMigrations?.[0];
-  if (!coerced) throw new Error("Missing adapted migration");
+  if (!coerced) {
+    throw new Error("Missing adapted migration");
+  }
   await expect(
     collectPluginDoctorMigrationResources(
       [{ pluginId: "planned-owner", migration: coerced }],

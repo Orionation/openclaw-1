@@ -21,10 +21,10 @@ import { findUninspectedPluginDiagnostic } from "./discovery-availability.js";
 import { discoverConfiguredPluginLoadPaths } from "./discovery.js";
 import { applyPluginDoctorCompatibilityMigration } from "./doctor-compatibility-migration.js";
 import { resolvePluginDoctorContractArtifact } from "./doctor-contract-artifact.js";
-import type { PluginDoctorMigrationBackupResource } from "./doctor-contract-module.js";
 import {
   coercePluginDoctorContractModule,
   type PluginDoctorContractModule,
+  type PluginDoctorMigrationBackupResource,
   type PluginDoctorStateMigration,
   type PluginDoctorStateMigrationEntry,
 } from "./doctor-contract-module.js";
