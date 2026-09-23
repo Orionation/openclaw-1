@@ -29,6 +29,7 @@ export class PersonalInstructions extends OpenClawLightDomElement {
   private connectionId: string | null = null;
   private gatewayUrl: string | null = null;
   private available = false;
+  private multipleProfiles = false;
   private generation = 0;
   private subscriptions: Array<() => void> = [];
   private drafts = new Map<string, { file: UsersPersonalFileGetResult; content: string }>();
@@ -70,8 +71,10 @@ export class PersonalInstructions extends OpenClawLightDomElement {
     const profileId = snapshot.selfUser?.id ?? this.profileId;
     const gatewayUrl = this.context.gateway.connection.gatewayUrl;
     const connectionId = snapshot.hello?.server?.connId ?? null;
+    this.multipleProfiles = snapshot.hello?.policy?.hasMultipleSessionSharingIdentities === true;
     const available =
       connected &&
+      this.multipleProfiles &&
       Boolean(snapshot.selfUser?.id) &&
       hasOperatorReadAccess(snapshot.hello?.auth ?? null);
     const identityChanged = profileId !== this.profileId || gatewayUrl !== this.gatewayUrl;
@@ -214,6 +217,9 @@ export class PersonalInstructions extends OpenClawLightDomElement {
   }
 
   override render() {
+    if (!this.multipleProfiles) {
+      return nothing;
+    }
     return html`<div id=${PROFILE_SETTINGS_TARGET_IDS.personalInstructions}>
       ${renderSettingsSection(
         {

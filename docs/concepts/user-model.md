@@ -15,6 +15,18 @@ OpenClaw loads `USER.md` beside `MEMORY.md` at session start. It has a separate 
 
 ## Personal USER files on a shared Gateway
 
+Single-user Gateways use only the agent workspace's root `USER.md`, editable in
+**Agents → Files**. They do not expose the personal instructions editor or chat
+tool, accept personal-file API requests, or load a second per-profile `USER.md`.
+An existing per-profile file is left on disk unchanged, not automatically merged
+into the root file.
+
+Personal files are available only when the Gateway has at least two distinct,
+unmerged person profiles, using the existing multi-user identity policy. The
+shared Owner profile does not count as a separate person. After the roster
+changes, reconnect the Control UI to refresh its advertised capabilities; the
+server rechecks the current policy on every read and write.
+
 Open **Settings → Profile → Personal instructions**, choose an agent in the
 Settings sidebar’s existing agent selector, and save your preferences. You can create or edit your own personal `USER.md` with an
 authenticated profile and `operator.read`; administrator or general write access
@@ -29,9 +41,9 @@ session owner, task directory, and model-supplied profile IDs never choose the
 write target. It reads the current file before saving with its content hash.
 Anonymous or autonomous runs without a live authenticated requester cannot use
 this exception. Normal tool policies still apply; general filesystem access is
-unchanged. A token/password or device-token shared-owner login edits that shared
-owner profile’s file; use individual sign-in to keep different people’s files
-separate.
+unchanged. On a multi-user Gateway, a token/password or device-token shared-owner login
+edits that shared owner profile’s file; use individual sign-in to keep different
+people’s files separate.
 
 Saves check the version you loaded. If another editor changes the file, keep a
 copy of your draft and reload before saving again. As with the shared workspace

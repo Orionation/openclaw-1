@@ -29,7 +29,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function mount(request: GatewayBrowserClient["request"], signedIn = true) {
+function mount(request: GatewayBrowserClient["request"], signedIn = true, multipleProfiles = true) {
   const base = createConnectedContext(
     request,
     signedIn ? { id: "profile-1", name: "Ada" } : null,
@@ -41,6 +41,7 @@ function mount(request: GatewayBrowserClient["request"], signedIn = true) {
       protocol: 3,
       server: { connId: "connection-1" },
       snapshot: {},
+      policy: { hasMultipleSessionSharingIdentities: multipleProfiles },
       auth: { role: "operator", scopes: ["operator.read"] },
     },
   };
@@ -364,6 +365,7 @@ it("invalidates an old read when the same client receives a new connection hello
       protocol: 3,
       server: { connId: "connection-2" },
       snapshot: {},
+      policy: { hasMultipleSessionSharingIdentities: true },
       auth: { role: "operator", scopes: ["operator.read"] },
     },
   });
@@ -383,6 +385,7 @@ it("retires a pending read after read access is revoked", async () => {
       protocol: 3,
       server: { connId: "connection-1" },
       snapshot: {},
+      policy: { hasMultipleSessionSharingIdentities: true },
       auth: { role: "operator", scopes: [] },
     },
   });
@@ -433,6 +436,7 @@ it("keeps the actual Profile editor mounted across an offline transition", async
             protocol: 3,
             server: { connId: "connection-1" },
             snapshot: {},
+            policy: { hasMultipleSessionSharingIdentities: true },
             auth: { role: "operator", scopes: ["operator.read"] },
           },
         };
@@ -474,4 +478,13 @@ it("keeps the actual Profile editor mounted across an offline transition", async
   expect(editor.querySelector("textarea")?.value).toBe(
     "Keep this draft across a network interruption",
   );
+});
+
+it("hides the personal editor and sends no file requests on a single-user Gateway", async () => {
+  const request = vi.fn().mockResolvedValue(file);
+  const { element } = mount(request, true, false);
+  await settle(element);
+  expect(element.textContent?.trim()).toBe("");
+  expect(element.querySelector("textarea")).toBeNull();
+  expect(request).not.toHaveBeenCalled();
 });

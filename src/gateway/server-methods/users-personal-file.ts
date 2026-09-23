@@ -19,6 +19,7 @@ import { isMissingPathError } from "../../infra/errors.js";
 import { root, FsSafeError } from "../../infra/fs-safe.js";
 import { roleScopesAllow } from "../../shared/operator-scope-compat.js";
 import {
+  hasMultipleSessionSharingIdentities,
   readResidentUserProfileId,
   readUserProfileIdentity,
 } from "../../state/user-profile-list.js";
@@ -45,6 +46,11 @@ function preparePersonalFile(options: GatewayRequestHandlerOptions, requestedAge
   const assertToolCurrent = captureGatewayToolCallerAssertion();
   const currentProfile = () => {
     options.sessionMutationCommitGuard?.();
+    if (!hasMultipleSessionSharingIdentities()) {
+      throw new PersonalFileAccessError(
+        "Personal instructions are only available on multi-user Gateways. Use the agent workspace USER.md on a single-user Gateway.",
+      );
+    }
     if (
       !client ||
       client.invalidated ||

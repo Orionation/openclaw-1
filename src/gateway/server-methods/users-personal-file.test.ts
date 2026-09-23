@@ -17,12 +17,14 @@ import { usersPersonalFileHandlers } from "./users-personal-file.js";
 
 const state = vi.hoisted(() => ({
   canonical: "alice",
+  multipleProfiles: true,
   role: "reader",
   remote: false,
   beforeMutation: undefined as (() => void) | undefined,
   commitGuard: undefined as (() => void) | undefined,
 }));
 vi.mock("../../state/user-profile-list.js", () => ({
+  hasMultipleSessionSharingIdentities: () => state.multipleProfiles,
   readResidentUserProfileId: (id: string) => (id === "alice-alias" ? state.canonical : id),
   readUserProfileIdentity: (id: string) => ({ profileId: id, role: state.role }),
 }));
@@ -56,6 +58,7 @@ let controller: AbortController;
 beforeEach(async () => {
   workspace = await fs.realpath(dirs.make("personal-file-"));
   state.canonical = "alice";
+  state.multipleProfiles = true;
   state.role = "reader";
   state.remote = false;
   state.beforeMutation = undefined;
@@ -340,6 +343,17 @@ describe("personal USER.md self-service", () => {
     ).rejects.toThrow("authenticated Gateway user turn");
   });
 
+  it("rejects personal reads and writes on a single-user Gateway without touching files", async () => {
+    state.multipleProfiles = false;
+    expect(await rpc("get")).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+    expect(await save("Not a second USER.md")).toMatchObject({
+      ok: false,
+      error: { code: "FORBIDDEN" },
+    });
+    expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
+    expect(await fs.readFile(path.join(workspace, "USER.md"), "utf8")).toBe("Shared defaults");
+  });
+
   it("lets a read-only signed-in user create, read, and edit only their canonical file", async () => {
     expect(await rpc("get")).toMatchObject({
       ok: true,
@@ -421,6 +435,7 @@ describe("personal USER.md self-service", () => {
   );
 
   it.each([
+    "single-user",
     "profile-merge",
     "disconnect",
     "scope-revocation",
@@ -438,6 +453,9 @@ describe("personal USER.md self-service", () => {
       },
     };
     state.beforeMutation = () => {
+      if (kind === "single-user") {
+        state.multipleProfiles = false;
+      }
       if (kind === "role-revocation") {
         state.role = "denied";
       }

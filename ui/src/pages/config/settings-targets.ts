@@ -32,6 +32,7 @@ export type SettingsSearchTarget = {
   readonly search?: string;
   readonly aliases?: string;
   readonly requiresIdentity?: true;
+  readonly requiresMultipleProfiles?: true;
   readonly requiresNativeDeviceSettings?: true;
 };
 
@@ -220,6 +221,7 @@ export const SETTINGS_SEARCH_TARGETS = {
     searchKeys: ["profilePage.personalInstructions.description"],
     aliases: "USER.md personal instructions preferences",
     requiresIdentity: true,
+    requiresMultipleProfiles: true,
   },
   githubConnections: {
     routeId: "profile",

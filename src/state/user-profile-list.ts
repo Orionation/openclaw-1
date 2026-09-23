@@ -119,18 +119,32 @@ export function readCurrentUserProfileAliases(
 export function hasMultipleSessionSharingIdentities(
   options: OpenClawStateDatabaseOptions = {},
 ): boolean {
-  ensureUserProfilesSchema(options);
-  const { db } = openOpenClawStateDatabase(options);
-  const profiles = executeSqliteQuerySync(
-    db,
-    userProfilesDb(db)
-      .selectFrom("user_profiles")
-      .select("id")
-      .where("merged_into", "is", null)
-      .where("id", "!=", GATEWAY_OWNER_PROFILE_ID)
-      .limit(2),
-  ).rows;
-  return profiles.length >= 2;
+  // Runtime consumers share the projection-owned catalog; never initialize
+  // profile storage or query SQLite on each tool build/personal-file check.
+  return (
+    readProfileCatalog(
+      options,
+      (resident) => {
+        let people = 0;
+        for (const row of resident.values()) {
+          if (!row.merged_into && row.id !== GATEWAY_OWNER_PROFILE_ID && ++people === 2) {
+            return true;
+          }
+        }
+        return false;
+      },
+      (db) =>
+        executeSqliteQuerySync(
+          db,
+          userProfilesDb(db)
+            .selectFrom("user_profiles")
+            .select("id")
+            .where("merged_into", "is", null)
+            .where("id", "!=", GATEWAY_OWNER_PROFILE_ID)
+            .limit(2),
+        ).rows.length >= 2,
+    ) ?? false
+  );
 }
 
 /** Exact durable identity facts; never use display-reference prefix matching for authority. */

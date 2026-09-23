@@ -1,3 +1,4 @@
+import { hasMultipleSessionSharingIdentities } from "../state/user-profile-list.js";
 import type { OpenClawToolsOptions } from "./openclaw-tools.types.js";
 import type { AnyAgentTool } from "./tools/common.js";
 import { createGatewayTool } from "./tools/gateway-tool.js";
@@ -22,6 +23,8 @@ export function createHostedGatewayTools(
     }),
     createPluginsTool(),
     ...createOpenClawDelegateToolsForRun({ ...options, sessionAgentId }),
-    createPersonalInstructionsTool(sessionAgentId),
+    ...(hasMultipleSessionSharingIdentities()
+      ? [createPersonalInstructionsTool(sessionAgentId)]
+      : []),
   ];
 }
