@@ -301,8 +301,8 @@ export function registerTaskFinalizationAuthorityTests({
       execution: { status: "terminal", endedAt: Date.now(), outcome: { status: "ok" } },
       completion: { required: true, resultText: "delivered result" },
     });
-    const firstAttemptSettled = createDeferredCore<void>();
-    const cleanupCompleted = createDeferredCore<void>();
+    const firstAttemptSettled = createDeferredCore();
+    const cleanupCompleted = createDeferredCore();
     const persist = vi.fn(() => {
       if (entry.cleanupCompletedAt !== undefined) {
         firstAttemptSettled.resolve();
@@ -423,8 +423,8 @@ export function registerTaskFinalizationAuthorityTests({
   it("joins task finalization and rejects a replaced completion owner before commit", async () => {
     const entry = createRunEntry();
     const runs = new Map([[entry.runId, entry]]);
-    const entered = createDeferredCore<void>();
-    const release = createDeferredCore<void>();
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
     const commit = vi.fn();
     taskExecutorMocks.completeTaskRunByRunId.mockImplementation(
       async (_params: unknown, assertCurrent?: () => void) => {
