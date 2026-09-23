@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import {
   createOpenClawTestInstance,
@@ -11,6 +12,18 @@ import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-rea
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const sessionKey = "agent:main:thinking-status";
+const harnessOnlyLevels = [{ id: "ultra", label: "ultra" }];
+async function expectUnselectedUltraOption(page: Page) {
+  const options = await page
+    .locator(".chat-controls__model-settings:visible [data-chat-thinking-option]")
+    .evaluateAll((buttons) =>
+      buttons.map((button) => ({
+        value: button.getAttribute("data-chat-thinking-option"),
+        pressed: button.getAttribute("aria-pressed"),
+      })),
+    );
+  expect(options).toEqual([{ value: "ultra", pressed: "false" }]);
+}
 let instance: OpenClawTestInstance;
 const suite = createControlUiE2eSuite({
   name: "Model picker public thinking metadata",
@@ -71,7 +84,7 @@ const suite = createControlUiE2eSuite({
 });
 
 suite.define(() => {
-  it("retains saved Off through a real model change to an empty thinking profile", async () => {
+  it("retains saved Off through a real model change to harness-only Ultra", async () => {
     const key = "agent:main:thinking-saved-off";
     const commands: unknown[] = [];
     const frames: Array<{ direction: "sent" | "received"; frame: Record<string, unknown> }> = [];
@@ -158,7 +171,7 @@ suite.define(() => {
               modelProvider: "thinking-fixture",
               model: "no-effort",
               thinkingLevel: "off",
-              thinkingLevels: [],
+              thinkingLevels: harnessOnlyLevels,
             });
           await composer.fill("/think");
           await composer.press("Tab");
@@ -170,8 +183,9 @@ suite.define(() => {
               return observations.statusText;
             })
             .toContain("Current thinking level: off.");
-          expect(observations.statusText).toContain("Options: none.");
+          expect(observations.statusText).toContain("Options: default, ultra.");
           expect(await page.locator('[data-chat-thinking-slider="true"]').count()).toBe(0);
+          await expectUnselectedUltraOption(page);
           await page.screenshot({
             path: path.join(suite.artifactDir, "saved-off-empty-profile.png"),
           });
@@ -190,7 +204,7 @@ suite.define(() => {
             modelProvider: "thinking-fixture",
             model: "no-effort",
             thinkingLevel: "off",
-            thinkingLevels: [],
+            thinkingLevels: harnessOnlyLevels,
           });
           observations.final = after;
           const requests = frames
@@ -231,7 +245,7 @@ suite.define(() => {
     }
   }, 120_000);
 
-  it("reports no thinking choices without advertising a default or changing the session", async () => {
+  it("reports harness-only Ultra without advertising a default or changing the session", async () => {
     const commands: unknown[] = [];
     const call = async (method: string, params: Record<string, unknown>) => {
       const result = await instance.cli([
@@ -264,16 +278,16 @@ suite.define(() => {
         await call("models.list", { agentId: "main", view: "configured" }),
       );
       const model = catalog.models.find((entry) => entry.id === "no-effort");
-      expect(model?.thinkingLevels).toEqual([]);
+      expect(model?.thinkingLevels).toEqual(harnessOnlyLevels);
       expect(model?.thinkingDefault).toBeUndefined();
 
       const before: SessionsListResult = JSON.parse(
         await call("sessions.list", { agentId: "main", limit: 50 }),
       );
       const row = before.sessions.find((entry) => entry.key === sessionKey);
-      expect(row?.thinkingLevels).toEqual([]);
+      expect(row?.thinkingLevels).toEqual(harnessOnlyLevels);
       expect(row?.thinkingDefault).toBeUndefined();
-      expect(before.defaults.thinkingLevels).toEqual([]);
+      expect(before.defaults.thinkingLevels).toEqual(harnessOnlyLevels);
       expect(before.defaults.thinkingDefault).toBeUndefined();
 
       const handoff = await instance.cli(["dashboard", "--json"]);
@@ -321,12 +335,13 @@ suite.define(() => {
                   { timeout: 30_000 },
                 )
                 .toContain("Current thinking level: Unknown.");
-              expect(text).toContain("Options: none.");
+              expect(text).toContain("Options: default, ultra.");
             } finally {
               await page.screenshot({ path: path.join(suite.artifactDir, "thinking-status.png") });
             }
             expect(await composer.inputValue()).toBe("");
             expect(await page.getByRole("slider").count()).toBe(0);
+            await expectUnselectedUltraOption(page);
 
             stage = "open Sessions";
             await page.goto(new URL("/sessions", url).href);
@@ -339,7 +354,7 @@ suite.define(() => {
             tableOptions = await thinking
               .locator("option")
               .evaluateAll((options) => options.map((option) => option.getAttribute("value")));
-            expect(tableOptions).toEqual([""]);
+            expect(tableOptions).toEqual(["", "ultra"]);
             await thinking.locator("..").screenshot({
               path: path.join(suite.artifactDir, "session-thinking.png"),
             });
@@ -352,6 +367,7 @@ suite.define(() => {
             await expect.poll(() => modelControl.textContent()).toContain("No effort");
             draftModel = await modelControl.textContent();
             expect(await page.locator("[data-chat-thinking-slider='true']").count()).toBe(0);
+            await expectUnselectedUltraOption(page);
             await page.locator(".chat-controls__model-settings").screenshot({
               path: path.join(suite.artifactDir, "draft-thinking.png"),
             });
