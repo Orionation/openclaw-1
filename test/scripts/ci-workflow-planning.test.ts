@@ -26,7 +26,6 @@ import {
   writeGitHubOutput,
 } from "../../scripts/ci-changed-scope.mjs";
 import { resolveShardPlans } from "../../scripts/ci-run-node-test-shard.mts";
-import { resolveChangedDockerSeedLanes } from "../../scripts/lib/ci-changed-node-test-plan.mts";
 import {
   decodeNodeTestGroups,
   encodeNodeTestGroups,
@@ -183,6 +182,7 @@ function runCiManifestFixture(options: {
   startupCorpusSelection?: boolean;
   changedPlannerSource?: string | null;
   changedPlannerDependencies?: string[];
+  dockerSeedPlannerSource?: string;
   changedPaths?: string[] | null;
   changedCoreTestSupport?: boolean;
   repository?: string;
@@ -433,12 +433,15 @@ function runCiManifestFixture(options: {
           export const hasSqliteSessionLifecycleAffectingChange = (changedPaths) =>
             changedPaths.includes("src/sqlite-session-owner.ts") ||
             changedPaths.includes("test/scripts/sqlite-sessions-transcripts-flip-proof.built-cli.e2e.test.ts");
-          export const resolveChangedDockerSeedLanes = (changedPaths) => changedPaths.includes("scripts/e2e/docker-openai-seed.ts") ? ["mcp-channels", "cron-mcp-cleanup"] : [];
         `,
         "utf8",
       );
     }
     if (options.bundledPlanner) {
+      writeFileSync(
+        path.join(scriptsDir, "ci-docker-seed-plan.mts"),
+        options.dockerSeedPlannerSource ?? readFileSync("scripts/lib/ci-docker-seed-plan.mts"),
+      );
       const sqliteLifecycleProof = path.join(
         root,
         "test/scripts/sqlite-sessions-transcripts-flip-proof.built-cli.e2e.test.ts",
@@ -2188,39 +2191,46 @@ describe("ci workflow guards", () => {
     });
   });
 
-  it.each([
+  it.each<{
+    eventName: "pull_request" | "push" | "workflow_dispatch";
+    production: boolean;
+    expected: boolean;
+    legacyPlanner?: boolean;
+  }>([
     { eventName: "pull_request" as const, production: false, expected: false },
     { eventName: "pull_request" as const, production: true, expected: false },
-    { eventName: "push" as const, production: false, expected: false },
+    { eventName: "push" as const, production: false, expected: true },
     { eventName: "push" as const, production: true, expected: true },
     { eventName: "workflow_dispatch" as const, production: false, expected: true },
-  ])("routes published-upgrade proof for $eventName (production=$production)", (options) => {
-    const changedPaths = [
-      "src/commands/doctor-config-preflight.admission.process.test.ts",
-      "src/commands/doctor-config-runtime.test-support.ts",
-      ...(options.production ? ["src/commands/doctor-config-preflight.ts"] : []),
-    ];
-    expect(resolveChangedDockerSeedLanes(changedPaths)).toEqual(
-      options.production ? ["published-upgrade-survivor"] : [],
-    );
-    const result = runCiManifestFixture({
-      bundledPlanner: true,
-      runNode: false,
-      changedPaths,
-      eventName: options.eventName,
-      scopeEnv: { GITHUB_REF: "refs/heads/main" },
-      changedPlannerSource: `export { resolveChangedDockerSeedLanes } from "./ci-docker-seed-plan.mts";`,
-      changedPlannerDependencies: [
-        "scripts/lib/ci-docker-seed-plan.mts",
-        "scripts/lib/changed-path-facts.mjs",
-      ],
-    });
-    expect(result.status, result.output).toBe(0);
-    expect(result.outputs.run_docker_seed_e2e).toBe(String(options.expected));
-    expect(result.outputs.docker_seed_lanes).toBe(
-      options.expected ? "published-upgrade-survivor" : "",
-    );
-  });
+    { eventName: "push", production: false, expected: true, legacyPlanner: true },
+    { eventName: "workflow_dispatch", production: false, expected: true, legacyPlanner: true },
+  ])(
+    "routes published-upgrade proof for $eventName (production=$production, legacy=$legacyPlanner)",
+    (options) => {
+      const changedPaths = [
+        "src/commands/doctor-config-preflight.admission.process.test.ts",
+        "src/commands/doctor-config-runtime.test-support.ts",
+        ...(options.production ? ["src/commands/doctor-config-preflight.ts"] : []),
+      ];
+      const result = runCiManifestFixture({
+        bundledPlanner: true,
+        runNode: false,
+        changedPaths,
+        eventName: options.eventName,
+        scopeEnv: { GITHUB_REF: "refs/heads/main" },
+        ...(options.legacyPlanner ? { dockerSeedPlannerSource: "export {};" } : {}),
+      });
+      expect(result.status, result.output).toBe(0);
+      expect(result.outputs.run_docker_seed_e2e).toBe(String(options.expected));
+      expect(result.outputs.docker_seed_lanes).toBe(
+        options.eventName === "workflow_dispatch" && !options.legacyPlanner
+          ? "published-upgrade-survivor mcp-channels cron-mcp-cleanup mcp-code-mode-gateway update-channel-switch fleet-cache"
+          : options.expected
+            ? "published-upgrade-survivor"
+            : "",
+      );
+    },
+  );
 
   it.each([
     { repository: "openclaw/openclaw", ref: "refs/heads/main", expected: true },
@@ -2242,9 +2252,7 @@ describe("ci workflow guards", () => {
       });
       expect(result.status, result.output).toBe(0);
       expect(result.outputs.run_docker_seed_e2e).toBe(String(expected));
-      expect(result.outputs.docker_seed_lanes).toBe(
-        expected ? "mcp-channels cron-mcp-cleanup" : "",
-      );
+      expect(result.outputs.docker_seed_lanes).toBe(expected ? "published-upgrade-survivor" : "");
     },
   );
 
@@ -2275,8 +2283,8 @@ describe("ci workflow guards", () => {
       scopeEnv: { GITHUB_REF: "refs/heads/main" },
     });
     expect(result.status, result.output).toBe(0);
-    expect(result.outputs.run_docker_seed_e2e).toBe("false");
-    expect(result.outputs.docker_seed_lanes).toBe("");
+    expect(result.outputs.run_docker_seed_e2e).toBe("true");
+    expect(result.outputs.docker_seed_lanes).toBe("published-upgrade-survivor");
   });
 
   it.each([
@@ -2643,22 +2651,27 @@ describe("ci workflow guards", () => {
       };
     }
 
-    it.each(["test-play", "test-third-party"])(
-      "reuses one build instant across the %s unit and lint commands",
-      (task) => {
-        const result = runAndroidTask(
-          { task, lint: true },
-          { eventName: "pull_request", repository: "openclaw/openclaw", runAttempt: 1 },
-        );
+    it.each([
+      { task: "test-wear", lint: true, app_lint: "third-party", build_benchmark: false, calls: 3 },
+      { task: "ktlint", lint: false, app_lint: "play", build_benchmark: false, calls: 2 },
+      { task: "ktlint", lint: false, app_lint: "play", build_benchmark: true, calls: 3 },
+    ])(
+      "reuses one build instant across every command in $task with benchmark=$build_benchmark",
+      ({ calls, ...row }) => {
+        const result = runAndroidTask(row, {
+          eventName: "pull_request",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+        });
         expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
-        expect(result.calls).toHaveLength(2);
+        expect(result.calls).toHaveLength(calls);
         const metadata = result.calls.map((call) =>
           call.filter((arg) => arg.startsWith("-PopenclawBuildTimestamp=")),
         );
-        expect(metadata[0]).toHaveLength(1);
-        expect(metadata[1]).toEqual(metadata[0]);
         expect(result.clockReads).toHaveLength(1);
-        expect(metadata[0]).toEqual([`-PopenclawBuildTimestamp=${result.clockReads[0]}`]);
+        expect(metadata).toEqual(
+          result.calls.map(() => [`-PopenclawBuildTimestamp=${result.clockReads[0]}`]),
+        );
       },
     );
 
@@ -2709,7 +2722,7 @@ describe("ci workflow guards", () => {
             const testCall = call.some((arg) => arg.endsWith("UnitTest"));
             expect(call.includes("--init-script")).toBe(testCall);
           }
-          if ((row.task !== "test-play" && row.task !== "test-third-party") || row.lint !== true) {
+          if (row.lint !== true && !row.app_lint) {
             expect(result.clockReads).toEqual([]);
             expect(
               result.calls.flat().filter((arg) => arg.startsWith("-PopenclawBuildTimestamp=")),
@@ -2813,22 +2826,51 @@ describe("ci workflow guards", () => {
     });
 
     it.each([
-      ["test-play", ":app:testPlayDebugUnitTest"],
-      ["test-play", ":app:lintPlayDebug"],
-      ["test-third-party", ":app:testThirdPartyDebugUnitTest"],
-      ["test-third-party", ":app:lintThirdPartyDebug"],
-      ["test-wear", ":wear:lintDebug"],
-      ["ktlint", ":benchmark:assembleDebug"],
-    ])("propagates %s failure from %s", (task, failTask) => {
+      { task: "test-play", failTask: ":app:testPlayDebugUnitTest", calls: 1 },
+      { task: "test-third-party", failTask: ":app:testThirdPartyDebugUnitTest", calls: 1 },
+      {
+        task: "test-wear",
+        lint: true,
+        app_lint: "third-party",
+        failTask: ":wear:testDebugUnitTest",
+        calls: 1,
+      },
+      {
+        task: "test-wear",
+        lint: true,
+        app_lint: "third-party",
+        failTask: ":wear:lintDebug",
+        calls: 2,
+      },
+      {
+        task: "test-wear",
+        lint: true,
+        app_lint: "third-party",
+        failTask: ":app:lintThirdPartyDebug",
+        calls: 3,
+      },
+      {
+        task: "ktlint",
+        app_lint: "play",
+        build_benchmark: true,
+        failTask: ":benchmark:assembleDebug",
+        calls: 2,
+      },
+      {
+        task: "ktlint",
+        app_lint: "play",
+        build_benchmark: true,
+        failTask: ":app:lintPlayDebug",
+        calls: 3,
+      },
+    ])("propagates $task failure from $failTask", ({ failTask, calls, ...row }) => {
       const result = runAndroidTask(
-        { task, lint: true, build_benchmark: true },
+        row,
         { eventName: "pull_request", repository: "openclaw/openclaw", runAttempt: 1 },
         failTask,
       );
       expect(result.status).toBe(23);
-      if (failTask.endsWith("UnitTest")) {
-        expect(result.calls).toHaveLength(1);
-      }
+      expect(result.calls).toHaveLength(calls);
     });
   });
 
@@ -3464,6 +3506,8 @@ describe("ci workflow guards", () => {
       writeFileSync(output, "");
       const result = runWorkflowShellScript(expectDefined(step.run, "dispatch script"), {
         cwd: root,
+        // Bash 3.2 does not honor errexit for the final false term in this [[ ... && ... ]].
+        linuxWorkflow: true,
         env: {
           ...process.env,
           PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
@@ -3802,7 +3846,7 @@ describe("ci workflow guards", () => {
       expect(qualification.outputs.run_qa_smoke_ci).toBe("true");
       expect(JSON.parse(qualification.outputs.qa_smoke_ci_matrix!).include).toHaveLength(4);
       expect(qualification.outputs.run_docker_seed_e2e).toBe("true");
-      expect(qualification.outputs.docker_seed_lanes).toBe("mcp-channels cron-mcp-cleanup");
+      expect(qualification.outputs.docker_seed_lanes).toBe("published-upgrade-survivor");
       expect(qualification.outputs.run_sqlite_session_lifecycle).toBe("true");
       const overCap = runCiManifestFixture({
         ...fixture,
@@ -5973,10 +6017,15 @@ describe("ci workflow guards", () => {
         expect(
           JSON.parse(expectDefined(preflightOutputs.android_matrix, "Android matrix")).include,
         ).toEqual([
-          { check_name: "android-test-play", task: "test-play", lint: true },
-          { check_name: "android-test-third-party", task: "test-third-party", lint: true },
-          { check_name: "android-test-wear", task: "test-wear", lint: true },
-          { check_name: "android-ktlint", task: "ktlint" },
+          { check_name: "android-test-play", task: "test-play" },
+          { check_name: "android-test-third-party", task: "test-third-party" },
+          {
+            check_name: "android-test-wear",
+            task: "test-wear",
+            lint: true,
+            app_lint: "third-party",
+          },
+          { check_name: "android-ktlint", task: "ktlint", app_lint: "play" },
         ]);
       }
     },
@@ -6410,7 +6459,9 @@ describe("ci workflow guards", () => {
     expect(current.outputs.run_openclawkit_tests).toBe("true");
     expect(current.outputs.run_qa_smoke_ci).toBe("true");
     expect(current.outputs.run_docker_seed_e2e).toBe("true");
-    expect(current.outputs.docker_seed_lanes).toBe("published-upgrade-survivor");
+    expect(current.outputs.docker_seed_lanes).toBe(
+      "published-upgrade-survivor mcp-channels cron-mcp-cleanup mcp-code-mode-gateway update-channel-switch fleet-cache",
+    );
     expect(current.outputs.run_sqlite_session_lifecycle).toBe("true");
     expect(current.outputs.run_channel_contracts_shards).toBe("true");
     expect(current.outputs.run_protocol_event_coverage).toBe("true");
@@ -6444,10 +6495,15 @@ describe("ci workflow guards", () => {
         ),
       ).include,
     ).toEqual([
-      { check_name: "android-test-play", task: "test-play", lint: true },
-      { check_name: "android-test-third-party", task: "test-third-party", lint: true },
-      { check_name: "android-test-wear", task: "test-wear", lint: true },
-      { check_name: "android-ktlint", task: "ktlint" },
+      { check_name: "android-test-play", task: "test-play" },
+      { check_name: "android-test-third-party", task: "test-third-party" },
+      {
+        check_name: "android-test-wear",
+        task: "test-wear",
+        lint: true,
+        app_lint: "third-party",
+      },
+      { check_name: "android-ktlint", task: "ktlint", app_lint: "play" },
     ]);
 
     expect(

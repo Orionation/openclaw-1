@@ -38,7 +38,7 @@ export type GatewayServiceManageArgs = {
 };
 
 export type GatewayServiceControlArgs = {
-  /** Update stop identity only; the native owner must revalidate the live handoff lease. */
+  /** Correlation only: native stop needs live update authority and transferred helpers also revalidate their lease. */
   updateHandoff?: { root: string; runId: string };
   /** Revalidate captured binding after native lock and config admission, before effects. */
   beforeMutation?: () => Promise<void>;
