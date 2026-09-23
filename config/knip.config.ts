@@ -19,7 +19,11 @@ function bundledPluginFile(pluginId: string, relativePath: string, suffix = ""):
 const repositoryScriptEntries = [
   // apps/linux/README.md invokes this live Windows native-browser proof driver by path.
   "apps/linux/scripts/test-inline-browser.mjs!",
+  // Release workflows and Docker build helpers relay bounded warning logs through this CLI.
+  "scripts/relay-build-limit-warnings.mts!",
   "scripts/render-proof-video.mts!",
+  // Native lint wrappers and iOS Periphery invoke SwiftLint through this policy CLI.
+  "scripts/run-swiftlint.mts!",
   // tsdown builds this private macOS app worker protocol entry by path.
   "src/node-host/mac-worker-entry.ts!",
   // CI imports this selector from its trusted harness inside an inline Node script.
@@ -643,7 +647,7 @@ const config = {
         ...rootBundledPluginRuntimeDependencies,
       ],
       // Platform tools, installed CLIs, and shell builtins used by scripts and boundary tests.
-      ignoreBinaries: ["mint", "ngrok", "open", "openclaw", "sleep", "xcrun"],
+      ignoreBinaries: ["mint", "ngrok", "open", "openclaw", "sleep", "swiftlint", "xcrun"],
       // The stylelint config lives under config/, not a root default path.
       stylelint: { config: ["config/stylelint.config.mjs"] },
       project: [
