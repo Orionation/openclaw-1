@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { UpdateStepResult } from "../../infra/update-runner-types.js";
+import type { UpdateStepProgress } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import {
@@ -554,7 +554,7 @@ describe("update CLI shared helpers", () => {
     async ({ published, missingStorage }) => {
       await withTestDir({ prefix: "openclaw-update-clone-custody-" }, async (base) => {
         const checkoutDir = path.join(base, "openclaw");
-        const onStepComplete = vi.fn((step: UpdateStepResult) => {
+        const onStepComplete = vi.fn<NonNullable<UpdateStepProgress["onStepComplete"]>>((step) => {
           if (step.name === "git-clone-staging-cleanup") {
             throw new Error("cleanup warning ledger unavailable");
           }
