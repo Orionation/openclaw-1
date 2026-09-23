@@ -36,10 +36,13 @@ historical full behavior. As each child completes, rerun its failed jobs at
 most twice (`gh run rerun <child> --failed`, or
 `pnpm frv continue --failed --run <parent>` once children are terminal) without
 waiting for the operator. A lane that fails twice on a test the candidate did
-not touch is flaky: record it, fix `main` in parallel, never re-cut. Only a
-confirmed product defect in the update/install path (previous stable updates to
-the candidate, install smoke, pack budget, worker bundle) or a packaging defect
-creates a new Code SHA. A publish-tooling re-tag never does. Tooling,
+not touch, with no product cause found in the candidate delta, is flaky:
+record it, fix `main` in parallel, never re-cut. Only a confirmed product
+defect that a required lane blocks on creates a new Code SHA: the
+update/install path (previous stable updates to the candidate, install smoke,
+pack budget, worker bundle), the bytes to publish, or another required gate
+proven by diagnosis. A flake, an advisory lane, or a publish-tooling re-tag
+never does. Tooling,
 credentials, infrastructure or wrapper failure keeps the candidate and recovers
 the failed surface. Use [publication recovery](publication-recovery.md) for
 classification. While the parent runs, apply the runner-priority recipe from
@@ -112,9 +115,10 @@ Omit `--plugin-sdk-api-acknowledgement` when no API change exists. The helper
 completes package/install proof and prints the selected route's next command; do not dispatch
 another equivalent validation. Its `npm-beta-v1` Telegram package result is
 `deferred-postpublish`, never passed. Other policies retain their check.
-Parallels belongs to postpublish `pnpm release:beta-smoke` on every track: the
-helper defaults stable/full to candidate Parallels, so pass `--skip-parallels`
-and use `--run-parallels` only on explicit operator direction. Optional
+Parallels and Telegram package proof belong to postpublish confidence on every
+track. A final version never records `npm-beta-v1`, so the helper runs both
+for stable unless you pass `--skip-parallels --skip-telegram`; use
+`--run-parallels` only on explicit operator direction. Optional
 `--windows-node-tag <exact-source-tag>` records its approved installer digest
 map; stable candidates do not require Windows. The default stable candidate is
 validated with the beta profile and no soak: pass `--release-profile beta` and

@@ -110,9 +110,11 @@ confidence evidence. Matching beta confidence may support the light promotion
 roster in [regular release](regular-release.md), not waive a required gate.
 
 One validation parent per release. Rerun failed jobs per child at most twice,
-automatically; a lane failing twice on a test the candidate did not touch is
-flaky, recorded and fixed on `main` in parallel. Re-cut only for a confirmed
-product defect in the update/install path or a packaging defect. When the
+automatically; a lane failing twice on a test the candidate did not touch,
+with no product cause in the candidate delta, is flaky, recorded and fixed on
+`main` in parallel. Re-cut only for a confirmed product defect that a required
+lane blocks on (update/install path, publish bytes, or another required gate
+proven by diagnosis), never for a flake or an advisory lane. When the
 6-hour budget is exceeded, report the blocking lane and the decision taken
 instead of starting another full run.
 

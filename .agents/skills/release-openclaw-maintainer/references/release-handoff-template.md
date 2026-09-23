@@ -83,11 +83,12 @@ reference for commands rather than redispatching the release parent.
 
 ## Failure policy
 
-- confirmed product defect in the update/install path or packaging defect:
-  fix the release branch, freeze a new Code SHA, and invalidate downstream
-  product evidence; any other failure keeps the Code SHA
-- flaky lane (fails twice on a test the candidate did not touch): record it,
-  fix `main` in parallel, never re-cut
+- confirmed product defect that a required lane blocks on (update/install
+  path, publish bytes, or another required gate proven by diagnosis): fix the
+  release branch, freeze a new Code SHA, and invalidate downstream product
+  evidence; any other failure keeps the Code SHA
+- flaky lane (fails twice on a test the candidate did not touch, no product
+  cause in the delta): record it, fix `main` in parallel, never re-cut
 - regular changelog-only failure before tagging: change the selected release entry and only
   its permitted record/index paths, freeze a new Release SHA, and reuse green
   Code SHA evidence after `split-changelog-release-v1` delta proof

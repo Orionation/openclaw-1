@@ -415,35 +415,41 @@ checklist below explains each step; this section decides what the default is.
    never requires a new candidate or a new validation parent.
 2. **Beta-profile evidence with a stable soak waiver.** Dispatch Full Release
    Validation with `release_profile=beta` and `run_release_soak=false`. Pass
-   `--release-profile beta --stable-soak-waiver '<reason>'` to
-   `pnpm release:candidate`; the printed publish command carries
-   `stable_soak_waiver`. Soak, broad live/E2E, Telegram, QA-live, and Parallels
-   are postpublish confidence, never pre-publish gates. Standard waiver wording:
+   `--release-profile beta --stable-soak-waiver '<reason>' --skip-telegram --skip-parallels`
+   to `pnpm release:candidate`; the printed publish command carries
+   `stable_soak_waiver`. A final version never records `npm-beta-v1`, so the
+   helper defers candidate Telegram and Parallels only through those explicit
+   skips. Soak, broad live/E2E, Telegram, QA-live, and Parallels are postpublish
+   confidence, never pre-publish gates. Standard waiver wording:
    `Operator-approved by <operator> for YYYY.M.PATCH: beta-profile Full Release Validation <run id> attempt <n> green; soak, live/E2E, Telegram, QA-live, and Parallels deferred to postpublish confidence; update from <previous stable> to the candidate proven.`
 3. **Time-boxed validation.** One FRV parent per release. As each child
    completes, rerun its failed jobs (`gh run rerun <child-run-id> --failed`, or
    `pnpm frv continue --failed --run <parent-run-id>` once children are
    terminal) at most twice, automatically, without waiting for the operator. A
-   lane that fails twice on a test the candidate did not touch is flaky: record
-   it, fix it on `main` in parallel, and do not re-cut. A re-cut is justified
-   only by a confirmed product defect in the update/install path (the previous
-   stable must update to the candidate, `install-smoke`, pack budget, worker
-   bundle) or a packaging defect in the bytes to publish.
+   lane that fails twice on a test the candidate did not touch, where diagnosis
+   finds no product cause in the candidate delta, is flaky: record it, fix it
+   on `main` in parallel, and do not re-cut. A re-cut is justified only by a
+   confirmed product defect that a required lane blocks on: the update/install
+   path (the previous stable must update to the candidate, `install-smoke`,
+   pack budget, worker bundle), the bytes to publish, or another required gate
+   proven by diagnosis. Flakes and advisory lanes never justify one.
 4. **Native apps decoupled.** macOS, Windows, Linux, and Android publication
-   starts as soon as the tag exists and runs in parallel with npm. Their
-   failures never hold npm/ClawHub publication, GitHub release finalization, or
-   main closeout. `macos-swift` and Windows node-test CI lanes are advisory for
+   overlaps npm instead of queuing behind it; each publisher starts once its own
+   prerequisites hold (macOS from the tag and exact source, Linux and Windows
+   from `finalize_github_release`, Android after core npm). Their failures never
+   hold npm/ClawHub publication, GitHub release finalization, or main closeout. `macos-swift` and Windows node-test CI lanes are advisory for
    the npm decision; while `ci.yml` still enforces them, rerun that lane in
    parallel rather than re-cutting.
 5. **Runner priority.** While a release FRV or publish parent is active, cancel
-   queued non-release hosted-runner runs (PR CI, Security Review, Auto response,
-   PR context, Labeler, CodeQL, Periphery, Workflow Sanity) and restore them
-   afterwards:
+   queued pull-request-event runs of the named non-release workflows and
+   restore them afterwards. Select by workflow name and `pull_request` event,
+   never by branch: release parents, children, Linux requests, and Docker
+   recovery are `workflow_dispatch` runs, some on `main`, and must stay queued.
 
    ```bash
    gh run list --repo openclaw/openclaw --status queued --limit 500 \
-     --json databaseId,workflowName,headBranch \
-     --jq '.[] | select(.headBranch | test("^(release/|release-ci/|release-publish/)") | not) | [.databaseId, .workflowName, .headBranch] | @tsv' \
+     --json databaseId,workflowName,headBranch,event \
+     --jq '.[] | select(.event | IN("pull_request","pull_request_target")) | select(.workflowName | IN("CI","Security Review","Auto response","PR context and evidence","Labeler","CodeQL","Periphery Dead Code Comment","Workflow Sanity")) | [.databaseId, .workflowName, .headBranch] | @tsv' \
      > cancelled-for-release.tsv
    cut -f1 cancelled-for-release.tsv | xargs -n1 gh run cancel --repo openclaw/openclaw
    # after the release parent is terminal
@@ -507,7 +513,7 @@ For beta, stable, and full profiles, Linux (`ubuntu`) cross-OS lanes gate npm pu
 1. Start from current `main`: pull latest, confirm the target commit is pushed, and confirm `main` CI is green enough to branch from.
 2. Create `release/YYYY.M.PATCH` from that commit. Backports are optional; apply only the operator-selected set of merged `main` PRs. Bump every required version location, run `pnpm release:prep`, finish release fixes and required forward-ports, and review `src/plugins/compat/registry.ts` plus `src/commands/doctor/shared/deprecation-compat.ts`.
 3. Prepare the complete history manifest and release notes, then freeze the product-complete commit and target context as the **Code SHA/ref**, and record the trusted **Tooling SHA/ref**. Run the deterministic source preflight, then use `pnpm ci:full-release --sha <code-sha> --target-ref release/YYYY.M.PATCH --workflow-sha <tooling-sha> -f validation_purpose=publish -f publication_selection_json="$PUBLICATION_SELECTION"`. Reuse those exact identities for later release validation; never refresh the tooling from moving `main`. Beta-publish and the default stable path use `release_profile=beta` without soak; postpublish-confidence owns broad live, QA-live, mobile, and Parallels work.
-4. Rerun failed jobs per child automatically, at most twice, then classify what remains as product, harness/tooling/provenance, infrastructure/credential, or wrapper. Only a confirmed product defect in the update/install path or a packaging defect creates a new Code SHA. Use one diagnosis, one fix when needed, and one narrow retry, then reassess.
+4. Rerun failed jobs per child automatically, at most twice, then classify what remains as product, harness/tooling/provenance, infrastructure/credential, or wrapper. Only a confirmed product defect that a required lane blocks on creates a new Code SHA. Use one diagnosis, one fix when needed, and one narrow retry, then reassess.
 5. Keep the selected `CHANGELOG/YYYY.M.PATCH.md` section complete, user-facing and deduplicated, covering merged PRs and direct commits since the last reachable shipped tag. Use the shared writer to keep its contribution record and root index aligned. The full manifest and editorial pass may overlap Code validation. When a divergent shipped tag or later forward-port re-associates already-released PRs, pass it explicitly as `--shipped-ref`. A contribution-record target may be an ancestor of the final target; include later fixes honestly rather than inventing a self-referential SHA.
 6. If the qualified Code SHA already contains fully final notes, use that same commit as **Release SHA**. One successful fresh full qualification can supply both lifecycle roles and their exact publication bytes; do not create another commit or run solely to separate the labels. If notes change after qualification, commit the selected release entry and any matching record/index updates as a new Release SHA. Changes outside the [changelog-only delta](#changelog-only-evidence-reuse) return the release to step 2.
 7. When Code SHA equals Release SHA, retain its successful full validation parent and exact prepared npm/OCI descriptors. Only for a later genuine changelog-only descendant, optionally run SHA-pinned Full Release Validation with evidence reuse: the complete delta must satisfy `split-changelog-release-v1`, point at green Code evidence, and dispatch no product child lanes. That path still prepares and qualifies new Release SHA package/image bytes. Either path must satisfy every required profile gate. Regular final artifacts include SDK reports for both npm `beta` and `latest`; review the report and 8-character acknowledgement for the channel you will publish.
@@ -540,7 +546,7 @@ For beta, stable, and full profiles, Linux (`ubuntu`) cross-OS lanes gate npm pu
      --skip-dispatch
    ```
 
-   Include `--plugin-sdk-api-acknowledgement` only when the preflight reported Plugin SDK API changes. Stable candidates need no Windows tag. Optionally pass `--windows-node-tag vX.Y.Z` to record the approved installer digest map and include both Windows inputs in the printed publish command. The default stable candidate is validated with the beta profile and no soak: pass `--release-profile beta` and the operator-approved `--stable-soak-waiver '<reason>'`; the embedded preflight evaluates the [same waiver](#check-publication-gates) and the printed command carries `stable_soak_waiver`. Parallels install/update proof belongs to the postpublish `pnpm release:beta-smoke` roster; the helper defaults stable/full to candidate Parallels, so pass `--skip-parallels` on the fast path and `--run-parallels` only when the operator explicitly wants that proof before publish. The helper verifies release-note provenance, npm preflight bytes, and plugin publish plans, then prints the publish command. When admitted Full Release Validation evidence carries `coveragePolicy=npm-beta-v1`, it records Telegram package proof as `deferred-postpublish`; other evidence retains the existing Telegram check. After it completes green, create and push the final signed tag at that same Release SHA, then run the printed publish command.
+   Include `--plugin-sdk-api-acknowledgement` only when the preflight reported Plugin SDK API changes. Stable candidates need no Windows tag. Optionally pass `--windows-node-tag vX.Y.Z` to record the approved installer digest map and include both Windows inputs in the printed publish command. The default stable candidate is validated with the beta profile and no soak: pass `--release-profile beta` and the operator-approved `--stable-soak-waiver '<reason>'`; the embedded preflight evaluates the [same waiver](#check-publication-gates) and the printed command carries `stable_soak_waiver`. Parallels install/update proof and Telegram package proof belong to postpublish confidence (`pnpm release:beta-smoke`); a final version never records `npm-beta-v1`, so the helper runs both unless you pass `--skip-parallels --skip-telegram` on the fast path. Pass `--run-parallels` only when the operator explicitly wants that proof before publish. The helper verifies release-note provenance, npm preflight bytes, and plugin publish plans, then prints the publish command. When admitted Full Release Validation evidence carries `coveragePolicy=npm-beta-v1`, it records Telegram package proof as `deferred-postpublish`; other evidence retains the existing Telegram check. After it completes green, create and push the final signed tag at that same Release SHA, then run the printed publish command.
 
    `pnpm release:candidate` validates the current frozen branch tip by default (or the explicit `--target-sha`), and rejects a tag that already exists. After validating its evidence, it runs the [publish preflight](#check-publication-gates), reusing the downloaded manifests and exact run attempt. It records the gate table in the evidence bundle before the final signed tag is pushed. The planned tag is a warning until created; any failed gate leaves the checklist incomplete.
 
