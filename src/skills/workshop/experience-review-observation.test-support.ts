@@ -1,14 +1,30 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { vi } from "vitest";
 import * as responsesEgress from "../../../packages/ai/src/transports/openai-responses-prompt-observer-internal.js";
+import * as toolValidation from "../../../packages/llm-core/src/validation.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { readExperienceReviewMessageText } from "./experience-review-message-text.test-support.js";
 
 export async function observeExperienceReview(run: () => Promise<void>) {
   let session: SessionManager | undefined;
   const requests: Array<{ toolNames: string[]; systemPrompt: string; outputs: unknown[] }> = [];
+  const toolArguments: Array<{ toolCallId: string; prepared: unknown; validated: unknown }> = [];
   const openModelContext = SessionManager.openModelContextAsync.bind(SessionManager);
   const createEgressObserver = responsesEgress.createResponsesPromptEgressObserver;
+  const validateToolArguments = toolValidation.validateToolArguments;
+  const validationSpy = vi
+    .spyOn(toolValidation, "validateToolArguments")
+    .mockImplementation((tool, call) => {
+      const validated = validateToolArguments(tool, call);
+      if (call.name === "tool_call") {
+        toolArguments.push({
+          toolCallId: call.id,
+          prepared: structuredClone(call.arguments),
+          validated: structuredClone(validated),
+        });
+      }
+      return validated;
+    });
   // Keep the actual runner and transport. Silent reviews suppress public assistant events;
   // the detached transcript and final provider request own the facts this smoke needs.
   const sessionSpy = vi
@@ -66,6 +82,7 @@ export async function observeExperienceReview(run: () => Promise<void>) {
     const final = review.findLast((message) => message.role === "assistant");
     return {
       requests,
+      toolArguments,
       finalText: final ? readExperienceReviewMessageText(final.content).trim() : "",
       toolCalls: review.flatMap((message) =>
         message.role === "assistant"
@@ -77,5 +94,6 @@ export async function observeExperienceReview(run: () => Promise<void>) {
   } finally {
     providerSpy.mockRestore();
     sessionSpy.mockRestore();
+    validationSpy.mockRestore();
   }
 }

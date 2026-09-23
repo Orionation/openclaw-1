@@ -2,6 +2,10 @@ import type { AgentMessage } from "@openclaw/agent-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect } from "vitest";
 import { isToolResultError } from "../../agents/tool-result-error.js";
+import {
+  prepareToolSearchDispatcherArguments,
+  readToolSearchCallArgs,
+} from "../../agents/tool-search-request.js";
 import type { readSkillCuratorReviewStatus } from "./collection-review-state.js";
 import { readExperienceReviewMessageText } from "./experience-review-message-text.test-support.js";
 import type { observeExperienceReview } from "./experience-review-observation.test-support.js";
@@ -47,27 +51,33 @@ export function assertExperienceReviewDecision(params: {
     expect(call.name).toBe("tool_call");
     const envelope = receipt?.details;
     if (
-      !receipt ||
-      !isRecord(call.arguments) ||
-      !isRecord(call.arguments.args) ||
       !isRecord(envelope) ||
       !isRecord(envelope.tool) ||
       !isRecord(envelope.result) ||
       !isRecord(envelope.result.details) ||
       !Array.isArray(envelope.result.content)
     ) {
-      throw new Error("Workshop call is missing its target arguments or result envelope.");
+      throw new Error("Workshop call is missing its result envelope.");
     }
     expect(envelope.tool).toMatchObject({
       id: expect.any(String),
       name: "skill_workshop",
       source: "openclaw",
     });
-    expect([envelope.tool.id, envelope.tool.name]).toContain(call.arguments.id);
     expect(isToolResultError(envelope.result)).toBe(false);
+    const toolArguments = observation.toolArguments.find((entry) => entry.toolCallId === call.id);
+    if (!toolArguments) {
+      throw new Error("Workshop call is missing its validated arguments.");
+    }
+    expect(toolArguments.prepared).toEqual(prepareToolSearchDispatcherArguments(call.arguments));
+    const dispatched = readToolSearchCallArgs(toolArguments.validated);
+    if (!isRecord(dispatched.input)) {
+      throw new Error("Workshop call is missing its target arguments.");
+    }
+    expect([envelope.tool.id, envelope.tool.name]).toContain(dispatched.id);
     return [
       {
-        input: call.arguments.args,
+        input: dispatched.input,
         details: envelope.result.details,
         text: envelope.result.content
           .flatMap((part: unknown) =>

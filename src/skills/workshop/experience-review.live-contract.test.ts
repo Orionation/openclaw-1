@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { makeTextToolResult } from "../../../test/helpers/text-tool-result.js";
+import { prepareToolSearchDispatcherArguments } from "../../agents/tool-search-request.js";
 import type { Message } from "../../llm/types.js";
 import { assertExperienceReviewDecision } from "./experience-review-decision.test-support.js";
 
 type DecisionInput = Parameters<typeof assertExperienceReviewDecision>[0];
+const workshopId = "openclaw:core:skill_workshop";
+
 function abstention(): DecisionInput {
   const messages: Message[] = [
     makeTextToolResult("history", "exec", "observed recovery", false, 0),
@@ -33,6 +36,7 @@ function abstention(): DecisionInput {
         },
       ],
       finalText: "NO_REPLY",
+      toolArguments: [],
       toolCalls: [],
       toolResults: [],
     },
@@ -41,7 +45,7 @@ function abstention(): DecisionInput {
 
 function workshopEnvelope(text: string, details: Record<string, unknown> = {}) {
   return {
-    tool: { id: "openclaw:core:skill_workshop", name: "skill_workshop", source: "openclaw" },
+    tool: { id: workshopId, name: "skill_workshop", source: "openclaw" },
     result: { content: [{ type: "text", text }], details },
   };
 }
@@ -64,6 +68,25 @@ function addWorkshopCall(
     ...makeTextToolResult(id, "tool_call", JSON.stringify(envelope), false, 0),
     details: envelope,
   });
+  input.observation.toolArguments.push({
+    toolCallId: id,
+    prepared: { id: envelope.tool.id, args },
+    validated: { id: envelope.tool.id, args },
+  });
+}
+
+function setWorkshopCallArguments(
+  input: DecisionInput,
+  args: Record<string, unknown>,
+  validated?: unknown,
+) {
+  input.observation.toolCalls[0]!.arguments = args;
+  const prepared = prepareToolSearchDispatcherArguments(args);
+  input.observation.toolArguments[0] = {
+    toolCallId: input.observation.toolCalls[0]!.id,
+    prepared,
+    validated: validated ?? prepared,
+  };
 }
 
 function proposal(): DecisionInput {
@@ -87,11 +110,15 @@ describe("Workshop live decision acceptance", () => {
     "allows successful %s before explicit abstention",
     (action) => {
       const input = abstention();
-      addWorkshopCall(
+      const args = {
+        action,
+        skill_name: "existing-skill",
+        ...(action === "prepare_patch" ? { old_string: "Existing skill" } : {}),
+      };
+      addWorkshopCall(input, "prepare", args, "Existing skill content");
+      setWorkshopCallArguments(
         input,
-        "prepare",
-        { action, name: "existing-skill" },
-        "Existing skill content",
+        action === "read" ? { id: workshopId, ...args } : { id: workshopId, input: args },
       );
       expect(assertExperienceReviewDecision(input)).toBe("abstained");
     },
@@ -197,9 +224,42 @@ describe("Workshop live decision acceptance", () => {
     corrupt(input);
     expect(() => assertExperienceReviewDecision(input)).toThrow();
   });
-  it("accepts one pending proposal backed by a matching successful tool receipt", () => {
-    expect(assertExperienceReviewDecision(proposal())).toBe("proposed");
-  });
+  it.each([
+    { label: "nested args", arguments: { id: workshopId, args: { action: "create" } } },
+    { label: "input wrapper", arguments: { id: workshopId, input: { action: "create" } } },
+    {
+      label: "flattened proposal name",
+      arguments: { id: workshopId, action: "create", name: "queue-audit" },
+    },
+    {
+      label: "empty wrapper with flattened arguments",
+      arguments: { id: workshopId, args: {}, action: "create", name: "queue-audit" },
+    },
+    {
+      label: "dotted arguments",
+      arguments: { id: workshopId, "args.action": "create", "args.name": "queue-audit" },
+    },
+    {
+      label: "double-wrapped selector alias",
+      arguments: { args: { toolId: workshopId, args: { action: "create" } } },
+    },
+    {
+      label: "trimmed selector",
+      arguments: { id: " skill_workshop ", args: { action: "create" } },
+    },
+    {
+      label: "JSON-encoded args",
+      arguments: { id: workshopId, args: JSON.stringify({ action: "create" }) },
+      validated: { id: workshopId, args: { action: "create" } },
+    },
+  ])(
+    "accepts $label with one pending proposal and its matching receipt",
+    ({ arguments: args, validated }) => {
+      const input = proposal();
+      setWorkshopCallArguments(input, args, validated);
+      expect(assertExperienceReviewDecision(input)).toBe("proposed");
+    },
+  );
   it.each([
     [
       "missing mutation call",
@@ -243,7 +303,23 @@ describe("Workshop live decision acceptance", () => {
     [
       "mismatched target selector",
       (input: DecisionInput) => {
-        input.observation.toolCalls[0]!.arguments.id = "exec";
+        setWorkshopCallArguments(input, { id: "exec", args: { action: "create" } });
+      },
+    ],
+    [
+      "unknown selector beside a known alias",
+      (input: DecisionInput) => {
+        setWorkshopCallArguments(input, {
+          id: "unknown-target-id",
+          toolId: workshopId,
+          action: "create",
+        });
+      },
+    ],
+    [
+      "missing argument validation",
+      (input: DecisionInput) => {
+        input.observation.toolArguments = [];
       },
     ],
     [
