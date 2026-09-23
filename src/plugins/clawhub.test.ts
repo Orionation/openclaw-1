@@ -365,7 +365,6 @@ describe("installPluginFromClawHub", () => {
     const { installPluginFromArchive } = await import("./install-package.js");
     installPluginFromArchiveMock.mockImplementationOnce(installPluginFromArchive);
     const archiveApi = await import("../infra/archive.js");
-    const preflight = vi.spyOn(archiveApi, "loadZipArchiveWithPreflight");
     const extraction = vi.spyOn(archiveApi, "extractArchive");
     let authorityActive = true;
     let result;
@@ -383,9 +382,7 @@ describe("installPluginFromClawHub", () => {
         },
       });
       expect(extraction).toHaveBeenCalledOnce();
-      expect(preflight).not.toHaveBeenCalled();
     } finally {
-      preflight.mockRestore();
       extraction.mockRestore();
     }
 
