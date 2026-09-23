@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { measuredSerialGroupSeconds } from "./ci-measured-serial-timings.mts";
 import type { CompactNodeTestShard, NodeTestShardGroup } from "./ci-node-test-plan.mts";
 import { mergeVitestPretestBuildModes } from "./vitest-build-prerequisites.mts";
 import { VITEST_PRETEST_BUILD_SECONDS } from "./vitest-shard-metadata.mts";
@@ -172,15 +173,115 @@ function isNumberedToolingGroup(group: NodeTestShardGroup): boolean {
   );
 }
 
+function executedSerialGroupFingerprint(
+  job: CompactNodeTestShard,
+  group: NodeTestShardGroup,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        runner: job.runner,
+        env: Object.fromEntries(
+          Object.entries(job.env ?? {}).toSorted(([a], [b]) => a.localeCompare(b)),
+        ),
+        group: {
+          fingerprint: executedGroupFingerprint(group),
+          fallbackMaxWorkers: group.fallbackMaxWorkers,
+          minTotalMemoryBytes: group.minTotalMemoryBytes,
+        },
+      }),
+    )
+    .digest("hex");
+}
+
+function packMeasuredSerialJobs(
+  jobs: CompactNodeTestShard[],
+  options: { runner: string; largeRunner?: string; compactMode?: "push" | "pull-request" },
+): CompactNodeTestShard[] {
+  if (!options.compactMode) {
+    return jobs;
+  }
+  const maxJobSeconds = options.compactMode === "push" ? 720 : 600;
+  const observations = measuredSerialGroupSeconds[options.compactMode];
+  type PricedGroup = { group: NodeTestShardGroup; seconds: number };
+  const pools = new Map<string, { jobs: CompactNodeTestShard[]; groups: PricedGroup[] }>();
+  for (const job of jobs) {
+    if (
+      job.planConcurrency !== 1 ||
+      job.requiresDist ||
+      job.pretestBuildMode ||
+      ![options.runner, options.largeRunner].includes(job.runner) ||
+      job.groups.some((group) => group.requiresDist || group.pretestBuildMode)
+    ) {
+      continue;
+    }
+    const priced = job.groups.flatMap((group) => {
+      const seconds = observations[executedSerialGroupFingerprint(job, group)];
+      return seconds === undefined ? [] : [{ group, seconds }];
+    });
+    if (
+      priced.length !== job.groups.length ||
+      priced.some(({ seconds }) => seconds + FIXED_JOB_SECONDS > maxJobSeconds)
+    ) {
+      continue;
+    }
+    // Preserve the executor's job-level intersection and deadline. Every
+    // child remains an intact process; no formerly serial plans overlap.
+    const key = JSON.stringify([job.runner, job.env, job.timeoutMinutes]);
+    const pool = pools.get(key) ?? { jobs: [], groups: [] };
+    pool.jobs.push(job);
+    pool.groups.push(...priced);
+    pools.set(key, pool);
+  }
+  const replacements = new Map<CompactNodeTestShard, CompactNodeTestShard>();
+  const retired = new Set<CompactNodeTestShard>();
+  for (const pool of pools.values()) {
+    const bins: Array<{ groups: NodeTestShardGroup[]; seconds: number }> = [];
+    for (const { group, seconds } of pool.groups.toSorted(
+      (a, b) => b.seconds - a.seconds || a.group.shard_name.localeCompare(b.group.shard_name),
+    )) {
+      const bin = bins.find(
+        (candidate) => candidate.seconds + seconds + FIXED_JOB_SECONDS <= maxJobSeconds,
+      );
+      if (bin) {
+        bin.groups.push(group);
+        bin.seconds += seconds;
+      } else {
+        bins.push({ groups: [group], seconds });
+      }
+    }
+    if (bins.length >= pool.jobs.length) {
+      continue;
+    }
+    pool.jobs.forEach((job, index) => {
+      const bin = bins[index];
+      if (!bin) {
+        retired.add(job);
+      } else {
+        replacements.set(job, {
+          ...job,
+          groups: bin.groups,
+          predictedSeconds: bin.seconds + FIXED_JOB_SECONDS,
+        });
+      }
+    });
+  }
+  return jobs.filter((job) => !retired.has(job)).map((job) => replacements.get(job) ?? job);
+}
+
 /** Reuse measured serial placement without replacing the general capacity-pricing owner. */
 export function rebalanceMeasuredHybridJobs(
   jobs: CompactNodeTestShard[],
   options: {
     runner: string;
+    largeRunner?: string;
+    compactMode?: "push" | "pull-request";
     estimateGroup: (group: NodeTestShardGroup) => { seconds: number; complete: boolean };
     canShare: (groups: NodeTestShardGroup[]) => boolean;
   },
 ): CompactNodeTestShard[] {
+  const maxPackedJobSeconds = options.compactMode === "pull-request" ? 600 : MAX_PACKED_JOB_SECONDS;
+  const finish = (result: CompactNodeTestShard[]) => packMeasuredSerialJobs(result, options);
   const split = jobs.flatMap((job) => {
     if (
       job.groups.length < 2 ||
@@ -292,18 +393,18 @@ export function rebalanceMeasuredHybridJobs(
   );
   const candidates = measured
     .filter(
-      ({ seconds, complete }) => complete && seconds + FIXED_JOB_SECONDS <= MAX_PACKED_JOB_SECONDS,
+      ({ seconds, complete }) => complete && seconds + FIXED_JOB_SECONDS <= maxPackedJobSeconds,
     )
     .toSorted((a, b) => b.seconds - a.seconds || a.job.checkName.localeCompare(b.job.checkName));
   if (candidates.length < 2) {
-    return split.map((job) => priced.get(job) ?? job);
+    return finish(split.map((job) => priced.get(job) ?? job));
   }
   const names = candidates.flatMap(({ job }) => job.groups.map((group) => group.shard_name));
   if (new Set(names).size !== names.length) {
-    return split.map((job) => priced.get(job) ?? job);
+    return finish(split.map((job) => priced.get(job) ?? job));
   }
 
-  const workBudget = MAX_PACKED_JOB_SECONDS - FIXED_JOB_SECONDS;
+  const workBudget = maxPackedJobSeconds - FIXED_JOB_SECONDS;
   const minimumJobs = Math.ceil(
     candidates.reduce((sum, entry) => sum + entry.seconds, 0) / workBudget,
   );
@@ -342,10 +443,10 @@ export function rebalanceMeasuredHybridJobs(
           predictedSeconds: Math.ceil(seconds + FIXED_JOB_SECONDS),
         }),
       );
-    return [
+    return finish([
       ...split.filter((job) => !retired.has(job)).map((job) => priced.get(job) ?? job),
       ...packed,
-    ];
+    ]);
   }
-  return split.map((job) => priced.get(job) ?? job);
+  return finish(split.map((job) => priced.get(job) ?? job));
 }

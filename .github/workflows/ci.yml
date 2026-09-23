@@ -1657,10 +1657,10 @@ jobs:
           const includeReleaseOnlyUiTests =
             (eventName === "workflow_dispatch" && !releaseGate) ||
             !isCanonicalRepository || compatibilityTarget || changedPaths === null;
-          // Ordinary CI shares eight 16-class browser jobs; full inventories retain
+          // Ordinary CI shares seven 16-class browser jobs; full inventories retain
           // twelve. Private source-server projects keep their own one-worker limit.
           const compactUiE2e = supportsUiE2eProjects && !includeReleaseOnlyUiTests;
-          const uiE2eJobCount = compactUiE2e ? 9 : supportsUiE2eProjects
+          const uiE2eJobCount = compactUiE2e ? 8 : supportsUiE2eProjects
             ? 13
             : usesHostedRunnerProfile ? 14 : 4;
           // The logical profile already owns contributor routing. Reuse the

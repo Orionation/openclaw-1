@@ -1426,9 +1426,13 @@ describe("CI changed Node test plan", () => {
       changedPath: "scripts/lib/ci-measured-compact-packing.mts",
       runnerBackend,
     })),
-    ...["scripts/lib/ci-test-timings.mts", "scripts/lib/vitest-shard-metadata.mts"].flatMap(
-      (changedPath) =>
-        ["blacksmith", "hybrid", "runson"].map((runnerBackend) => ({ changedPath, runnerBackend })),
+    ...[
+      "scripts/lib/ci-test-timings.mts",
+      "scripts/lib/vitest-shard-metadata.mts",
+      "scripts/lib/ci-measured-serial-timings.mts",
+      "test/scripts/ci-measured-compact-packing.test.ts",
+    ].flatMap((changedPath) =>
+      ["blacksmith", "hybrid", "runson"].map((runnerBackend) => ({ changedPath, runnerBackend })),
     ),
   ])(
     "keeps $changedPath under the $runnerBackend full-plan policy",
@@ -1438,7 +1442,7 @@ describe("CI changed Node test plan", () => {
         expect(shards).not.toBeNull();
         expect(
           fallbackGroups(shards ?? []).flatMap((group) => group.includePatterns ?? []),
-        ).toContain("test/scripts/ci-node-test-plan.test.ts");
+        ).toContain("test/scripts/ci-measured-compact-packing.test.ts");
       } else {
         expect(shards).toBeNull();
       }

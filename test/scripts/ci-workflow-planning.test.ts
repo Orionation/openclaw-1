@@ -7143,7 +7143,7 @@ describe("ci workflow guards", () => {
     expect(uiE2e.strategy["fail-fast"]).toBe(false);
     expect(uiE2e.strategy["max-parallel"]).toBe(14);
     expect(uiE2e.strategy.matrix).toBe("${{ fromJson(needs.preflight.outputs.ui_e2e_matrix) }}");
-    const expectedUiE2eMatrices = [6, 8, 12].map((vitestShardCount) => ({
+    const expectedUiE2eMatrices = [6, 7, 8, 12].map((vitestShardCount) => ({
       include: Array.from({ length: vitestShardCount + 1 }, (_, index) => {
         const shard = index + 1;
         return {
@@ -7151,7 +7151,7 @@ describe("ci workflow guards", () => {
           shard_count: vitestShardCount + 1,
           task: shard === vitestShardCount + 1 ? "browser-extension" : "control-ui",
           vitest_shard_count: vitestShardCount,
-          vitest_max_workers: vitestShardCount === 8 ? 3 : 2,
+          vitest_max_workers: vitestShardCount === 7 || vitestShardCount === 8 ? 3 : 2,
         };
       }),
     }));
