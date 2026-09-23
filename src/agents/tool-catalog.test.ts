@@ -27,6 +27,15 @@ function requirePolicyAllow(profile: Parameters<typeof resolveCoreToolProfilePol
 }
 
 describe("tool-catalog", () => {
+  it("lists personal instructions only when the multi-user capability is enabled", () => {
+    const ids = (personalInstructionsEnabled?: boolean) =>
+      listCoreToolSections({ personalInstructionsEnabled }).flatMap((section) =>
+        section.tools.map((tool) => tool.id),
+      );
+    expect(ids()).not.toContain("personal_instructions");
+    expect(ids(false)).not.toContain("personal_instructions");
+    expect(ids(true)).toContain("personal_instructions");
+  });
   it("lists the setup helper once in Automation without adding restricted profile membership", () => {
     const sections = listCoreToolSections();
     expect(
