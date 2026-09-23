@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import { readChatOutboxRecovery } from "./outbox-recovery.ts";
-import { listStoredChatOutboxes, summarizeStoredChatOutboxes } from "./outbox-store-projection.ts";
+import { createStoredChatOutboxReader, listStoredChatOutboxes } from "./outbox-store-projection.ts";
 import { retireStoredComposerDrafts } from "./outbox-store-retirement.ts";
 import {
   readProjectedOutboxStore,
@@ -103,8 +103,11 @@ describe("stored outbox summaries", () => {
   });
 
   it("normalizes an unchanged projection once and refreshes after an external write", () => {
-    const unsubscribe = subscribeStoredChatOutboxChanges(() => undefined);
+    const reader = createStoredChatOutboxReader();
+    const changed = vi.fn();
+    const unsubscribe = reader.subscribe(changed);
     const gatewayUrl = "ws://gateway.test/control";
+    const state = { settings: { gatewayUrl } };
     const storageKey = `openclaw.control.chatComposer.v4:${encodeURIComponent(gatewayUrl)}`;
     sessionStorage.setItem(
       storageKey,
@@ -120,6 +123,8 @@ describe("stored outbox summaries", () => {
     };
     const first = readProjectedOutboxStore(sessionStorage, target);
     expect(readProjectedOutboxStore(sessionStorage, target)).toBe(first);
+    const summary = reader.read(state);
+    expect(reader.read({ settings: { gatewayUrl } })).toBe(summary);
 
     sessionStorage.setItem(
       storageKey,
@@ -127,13 +132,26 @@ describe("stored outbox summaries", () => {
         version: 4,
         recovery: {},
         gatewayOwner: gatewayUrl,
-        sessions: { "main\u0000agent:main": { draft: "new", updatedAt: 1 } },
+        sessions: { "agent:main:summary\u0000agent:main": { draft: "new", updatedAt: 1 } },
       }),
     );
     const storageEvent = new StorageEvent("storage", { key: storageKey });
     Object.defineProperty(storageEvent, "storageArea", { value: sessionStorage });
     window.dispatchEvent(storageEvent);
     expect(readProjectedOutboxStore(sessionStorage, target)).not.toBe(first);
+    expect(changed).toHaveBeenCalledOnce();
+    const refreshed = reader.read(state);
+    expect(refreshed).not.toBe(summary);
+    expect(refreshed.hasSessionDraft("agent:main:summary")).toBe(true);
+    expect(
+      reader
+        .read({ settings: { gatewayUrl: "ws://other.test" } })
+        .hasSessionDraft("agent:main:summary"),
+    ).toBe(false);
+    expect(reader.read(state).hasSessionDraft("agent:main:summary")).toBe(true);
+    const reconnected = reader.read(state);
+    reader.invalidate();
+    expect(reader.read(state)).not.toBe(reconnected);
     unsubscribe();
   });
 
@@ -161,14 +179,14 @@ describe("stored outbox summaries", () => {
       write(key, value);
     });
     const state = { settings: { gatewayUrl } };
-    expect(summarizeStoredChatOutboxes(state).total).toBe(1);
+    expect(createStoredChatOutboxReader().read(state).total).toBe(1);
 
     sessionStorage.setItem(legacyKey, stored(["first", "second"]));
     const storageEvent = new StorageEvent("storage", { key: legacyKey });
     Object.defineProperty(storageEvent, "storageArea", { value: sessionStorage });
     window.dispatchEvent(storageEvent);
 
-    const refreshedTotal = summarizeStoredChatOutboxes(state).total;
+    const refreshedTotal = createStoredChatOutboxReader().read(state).total;
     unsubscribe();
     expect(refreshedTotal).toBe(2);
   });
@@ -226,7 +244,7 @@ describe("stored outbox summaries", () => {
           },
         }),
       );
-      expect(summarizeStoredChatOutboxes({ settings: { gatewayUrl } }).total).toBe(1);
+      expect(createStoredChatOutboxReader().read({ settings: { gatewayUrl } }).total).toBe(1);
     }
 
     sessionStorage.clear();
@@ -236,7 +254,7 @@ describe("stored outbox summaries", () => {
     unsubscribe();
 
     for (const gatewayUrl of gatewayUrls) {
-      expect(summarizeStoredChatOutboxes({ settings: { gatewayUrl } }).total).toBe(0);
+      expect(createStoredChatOutboxReader().read({ settings: { gatewayUrl } }).total).toBe(0);
     }
     expect(listener).toHaveBeenCalledOnce();
   });
@@ -450,7 +468,7 @@ describe("stored outbox summaries", () => {
         },
       }),
     );
-    const summary = summarizeStoredChatOutboxes({ ...state, settings: { gatewayUrl } });
+    const summary = createStoredChatOutboxReader().read({ ...state, settings: { gatewayUrl } });
     const read = vi.spyOn(sessionStorage, "getItem");
     sessionStorage.clear();
 
@@ -515,7 +533,7 @@ describe("stored outbox summaries", () => {
       }),
     );
 
-    const summary = summarizeStoredChatOutboxes({
+    const summary = createStoredChatOutboxReader().read({
       settings: { gatewayUrl },
       assistantAgentId: "previous",
       agentsList: { defaultId: "work", mainKey: "main" },
@@ -546,7 +564,7 @@ describe("stored outbox summaries", () => {
     );
 
     expect(
-      summarizeStoredChatOutboxes({
+      createStoredChatOutboxReader().read({
         settings: { gatewayUrl },
         agentsList: { defaultId: "work", mainKey: "workspace" },
       }).total,
@@ -577,7 +595,7 @@ describe("stored outbox summaries", () => {
       }),
     );
 
-    const summary = summarizeStoredChatOutboxes({ settings: { gatewayUrl } });
+    const summary = createStoredChatOutboxReader().read({ settings: { gatewayUrl } });
     expect(summary.total).toBe(2);
   });
 
@@ -644,7 +662,7 @@ describe("stored outbox summaries", () => {
       }),
     );
 
-    const summary = summarizeStoredChatOutboxes({ settings: { gatewayUrl } });
+    const summary = createStoredChatOutboxReader().read({ settings: { gatewayUrl } });
     expect(summary.total).toBe(8);
     expect(summary.attentionCountForSession("thread-a")).toBe(3);
     expect(summary.attentionCountForSession("thread-b")).toBe(1);
@@ -680,7 +698,7 @@ describe("stored outbox summaries", () => {
       agentsList: { defaultId: "work", mainKey: "main" },
     };
 
-    const summary = summarizeStoredChatOutboxes(state);
+    const summary = createStoredChatOutboxReader().read(state);
     const outboxes = listStoredChatOutboxes(state);
 
     expect(summary.total).toBe(1);
