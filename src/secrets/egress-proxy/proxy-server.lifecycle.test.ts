@@ -247,11 +247,11 @@ describe("secret egress registration lifecycle", () => {
     await siblingPeerClosed;
     await send(sibling);
     expect(peers[5]).not.toBe(peers[2]);
-    const options = connect.mock.calls.map(([options]) => options as tls.ConnectionOptions);
-    expect(options).toHaveLength(3);
-    expect(options[0]?.secureContext).toBeDefined();
-    for (const option of options) {
-      expect(option.secureContext).toBe(options[0]?.secureContext);
+    const tlsOptions = connect.mock.calls.map(([options]) => options as tls.ConnectionOptions);
+    expect(tlsOptions).toHaveLength(3);
+    expect(tlsOptions[0]?.secureContext).toBeDefined();
+    for (const option of tlsOptions) {
+      expect(option.secureContext).toBe(tlsOptions[0]?.secureContext);
       expect(option.ca).toBeUndefined();
       expect(option.key).toBeUndefined();
       expect(option.cert).toBeUndefined();
