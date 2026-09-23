@@ -99,28 +99,22 @@ describe("config-eval helpers", () => {
     ).toBe(true);
   });
 
-  it("caches binary lookups until PATH changes", () => {
-    setPlatform("linux");
-    vi.stubEnv("PATH", ["/missing/bin", "/found/bin"].join(path.delimiter));
-    const accessSpy = vi.spyOn(fs, "accessSync").mockImplementation((candidate) => {
-      if (String(candidate) === path.join("/found/bin", "tool")) {
-        return undefined;
-      }
-      throw new Error("missing");
+  it("caches successful binary lookups until PATH changes", () => {
+    withTempDirSync({ prefix: "openclaw-binary-cache-" }, (binDir) => {
+      setPlatform("linux");
+      const missingDir = path.join(binDir, "missing");
+      const executable = path.join(binDir, "tool");
+      fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(executable, 0o755);
+      vi.stubEnv("PATH", [missingDir, binDir].join(path.delimiter));
+
+      expect(hasBinary("tool")).toBe(true);
+      fs.unlinkSync(executable);
+      expect(hasBinary("tool")).toBe(true);
+
+      vi.stubEnv("PATH", missingDir);
+      expect(hasBinary("tool")).toBe(false);
     });
-
-    expect(hasBinary("tool")).toBe(true);
-    expect(hasBinary("tool")).toBe(true);
-    expect(accessSpy).toHaveBeenCalledTimes(2);
-
-    vi.stubEnv("PATH", "/other/bin");
-    accessSpy.mockClear();
-    accessSpy.mockImplementation(() => {
-      throw new Error("missing");
-    });
-
-    expect(hasBinary("tool")).toBe(false);
-    expect(accessSpy).toHaveBeenCalledTimes(1);
   });
 
   it("checks PATHEXT candidates and invalidates cached hits when PATHEXT changes", () => {
