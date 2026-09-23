@@ -525,10 +525,7 @@ it.each([
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const writerStarted = createDeferred();
     const releaseWriter = createDeferred();
-    const terminalPersisted = createDeferred();
-    let persistenceSpy:
-      | MockInstance<typeof lifecycleState.persistGatewaySessionLifecycleEvent>
-      | undefined;
+    const clearRequested = createDeferred<string>();
     let claimId: string | undefined;
     let subscriptions: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
     let heldWriter: Promise<unknown> | undefined;
@@ -555,7 +552,12 @@ it.each([
       claimId = claimAgentRunContext(
         runId,
         { lifecycleGeneration, sessionId, sessionKey: target.sessionKey },
-        { exclusive: true, ownsContext: true, trackOwner: true },
+        {
+          exclusive: true,
+          ownsContext: true,
+          trackOwner: true,
+          onClearRequested: clearRequested.resolve,
+        },
       );
       if (!claimId) {
         throw new Error("expected worker terminal claim");
@@ -581,16 +583,6 @@ it.each([
         terminalSessions: { closeTaskSessions: vi.fn() },
         refreshConnectedUserProfiles: vi.fn(),
       });
-      const persistLifecycleEvent = lifecycleState.persistGatewaySessionLifecycleEvent;
-      persistenceSpy = vi
-        .spyOn(lifecycleState, "persistGatewaySessionLifecycleEvent")
-        .mockImplementation((params) => {
-          const persistence = persistLifecycleEvent(params);
-          if (params.event.runId === runId && params.event.data?.phase === phase) {
-            terminalPersisted.resolve(persistence);
-          }
-          return persistence;
-        });
 
       emitAgentEventForOwner(
         {
@@ -617,9 +609,9 @@ it.each([
       );
       releaseWriter.resolve();
       await heldWriter;
-      // Failure persistence also appends its transcript receipt after the row commits.
-      // The owner stays active until that complete write settles.
-      await terminalPersisted.promise;
+      // Failed runs also persist a transcript receipt after the row update.
+      expect(await clearRequested.promise).toBe(terminalClaimId);
+      expect(persistenceTestWarnings).not.toHaveBeenCalled();
       expect(loadSessionEntry(target)?.status).toBe(status);
       expect(getAgentRunContextOwnerStatus(runId, terminalClaimId, lifecycleGeneration)).toBe(
         "clear-requested",
@@ -633,7 +625,6 @@ it.each([
       subscriptions?.lifecycleUnsub();
       await subscriptions?.taskUnsub();
       releaseAgentRunContext(runId, claimId);
-      persistenceSpy?.mockRestore();
       routing.loadSessionEntry.mockReset();
       closeOpenClawAgentDatabasesForTest();
       tempDirs.cleanup();
