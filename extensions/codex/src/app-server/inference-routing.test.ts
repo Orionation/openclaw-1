@@ -245,6 +245,11 @@ describe("managed inference route ownership", () => {
       const modelRelease = vi.fn();
       const privateFailure = new Error("synthetic private owner details");
       let stale = stage !== "before forwarding";
+      const assertCurrent = () => {
+        if (stale) {
+          throw privateFailure;
+        }
+      };
       const bind = createCodexInferenceModelBinding({
         client: h.client,
         provider: "fixture",
@@ -259,11 +264,7 @@ describe("managed inference route ownership", () => {
             source: {
               sourceIdentity: {},
               modelPolicyRequired: true,
-              assertCurrent: () => {
-                if (stale) {
-                  throw privateFailure;
-                }
-              },
+              assertCurrent,
               release: () => {},
               bindModelExecution: () => ({
                 assertCurrent: () => {},
@@ -271,7 +272,7 @@ describe("managed inference route ownership", () => {
                 release: modelRelease,
               }),
             },
-            assertCurrent: () => {},
+            assertCurrent,
             release,
             cancel: () => {},
             nativeReviewRequired: false,

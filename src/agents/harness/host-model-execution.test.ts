@@ -119,6 +119,7 @@ it.each([
         agentId: "main",
       },
       pluginId: "fixture",
+      nativeModelPolicySupport: "exact",
     });
     const bindings: Array<
       NonNullable<ReturnType<NonNullable<typeof host.capabilities.bindModelExecution>>>

@@ -53,6 +53,7 @@ export type NativeModelSourceOwner = {
 };
 export type NativeModelSourceCustody = {
   owner: ParentOwner;
+  assertCurrent: () => void;
   release: () => void;
 };
 export type NativeModelExecution = NativeModelSourceCustody & {
@@ -117,6 +118,8 @@ export type NativeChildAdmissionEvidence = DirectSpawnEvidence &
         /** V1 receipts name model work independently of legacy tool association. */
         modelSourceTurnId?: string;
         modelSourceConsumed?: true;
+        /** Unqualified native input cannot borrow a turn from legacy receipt pairing. */
+        modelSourceRequiresInference?: true;
       }
   );
 export type ParentState = {

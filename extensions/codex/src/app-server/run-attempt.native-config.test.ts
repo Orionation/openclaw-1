@@ -675,6 +675,7 @@ it.each(["restore", "fresh", "fresh after yield"] as const)(
     const host = await createAgentHarnessHostCapabilitiesForTest({
       attempt,
       pluginId: "codex",
+      nativeModelPolicySupport: "exact",
       operatorSource: {
         profileId: "unqualified-native-operator",
         scopes: ["operator.write"],

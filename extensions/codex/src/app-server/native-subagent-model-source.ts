@@ -1,4 +1,9 @@
-import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
+import {
+  matchingNativeModelAdmissions,
+  matchingNativeModelCause as matchingCause,
+  findUnqualifiedNativeModelParent,
+  waitForNativeModelSourceChange as waitForModelSourceChange,
+} from "./native-subagent-model-lookup.js";
 import type {
   ChildState,
   KnownChild,
@@ -83,7 +88,13 @@ export function bufferNativeChildAdmission(
   }
   pending.push(evidence);
   if (evidence.kind === "interaction" && !evidence.modelSourceConsumed) {
-    evidence.modelSource = retainNativeModelSource(evidence.modelOwner ?? evidence.owner);
+    const owner = evidence.modelOwner ?? evidence.owner;
+    if (owner?.unqualifiedModelExecution && !owner.nativeInputConfiguration) {
+      evidence.modelSourceRequiresInference = evidence.modelSourceTurnId ? undefined : true;
+      evidence.modelSource = retainNativeModelExecution(owner, undefined, evidence.childThreadId);
+    } else {
+      evidence.modelSource = retainNativeModelSource(owner);
+    }
   }
   admissions.set(turnId, pending);
 }
@@ -169,7 +180,9 @@ export function retainNativeModelSource(
   owner: ParentOwner | undefined,
 ): NativeModelSourceCustody | undefined {
   const capture = owner?.modelSource?.capture();
-  return capture && owner ? { owner, release: capture.release } : undefined;
+  return capture && owner
+    ? { owner, assertCurrent: capture.assertCurrent, release: capture.release }
+    : undefined;
 }
 
 export function retainNativeModelExecution(
@@ -231,6 +244,13 @@ export function retainNativeModelExecution(
     owner,
     executionOwner: nativeOwner,
     bindTurn,
+    assertCurrent: () => {
+      capture.assertCurrent();
+      if (nativeOwner.modelExecutionCancelled) {
+        throw new Error("Codex native model execution was cancelled");
+      }
+      binding?.assertCurrent();
+    },
     release: () => {
       if (!released) {
         released = true;
@@ -297,6 +317,10 @@ export function bindNativeChildModelAdmission(
   if (!source) {
     return false;
   }
+  if (evidence.modelSourceRequiresInference) {
+    return true;
+  }
+  source.assertCurrent();
   const turnId = evidence.modelSourceTurnId ?? evidence.nativeTurnId;
   if (!turnId) {
     return true;
@@ -450,13 +474,12 @@ type ModelSourceDependencies = {
   assertInputCurrent: (threadId: string, owner: ParentOwner) => void;
   hasPendingInput: (request: NativeModelSourceRequest) => boolean;
   onExecutionAdmitted: (known: KnownChild, threadId: string) => void;
+  registerChildExecution: (
+    state: ParentState,
+    request: NativeModelSourceRequest,
+    agentPath?: string,
+  ) => void;
 };
-
-function matchingCause(owner: ParentOwner, request: NativeModelSourceRequest): boolean {
-  return Boolean(
-    owner.turnId && (owner.turnId === request.parentTurnId || owner.turnId === request.rootTurnId),
-  );
-}
 
 function captureExecutionOwner(
   owner: ParentOwner,
@@ -516,6 +539,25 @@ function executionOwner(
       (owner) => owner.turnId === request.turnId && !owner.modelExecutionSettled,
     );
   }
+  const admitted = matchingNativeModelAdmissions(
+    request,
+    dependencies.admissions,
+    state.parentThreadId,
+  );
+  const owners = new Set(
+    admitted.flatMap((entry) => (entry.modelSource ? [entry.modelSource.owner] : [])),
+  );
+  const admittedOwner = owners.size === 1 ? owners.values().next().value : undefined;
+  if (
+    !dependencies.knownChildren.has(request.threadId) &&
+    admittedOwner?.unqualifiedModelExecution &&
+    request.parentThreadId
+  ) {
+    for (const entry of admitted) {
+      entry.modelSource?.assertCurrent();
+    }
+    dependencies.registerChildExecution(state, request, admitted[0]?.agentPath);
+  }
   const known = dependencies.knownChildren.get(request.threadId);
   if (
     known?.parent !== state ||
@@ -552,26 +594,12 @@ function executionOwner(
   }
   // Native inference can arrive before its turn/started notification. Only an
   // already accepted interaction with matching causal IDs can supply that turn.
-  const admitted = [...dependencies.admissions.values()]
-    .flat()
-    .filter(
-      (entry) =>
-        entry.kind === "interaction" &&
-        entry.parentThreadId === state.parentThreadId &&
-        entry.childThreadId === request.threadId &&
-        (!(entry.modelSourceTurnId ?? entry.nativeTurnId) ||
-          (entry.modelSourceTurnId ?? entry.nativeTurnId) === request.turnId) &&
-        entry.modelSource &&
-        matchingCause(entry.modelSource.owner, request),
-    );
-  const owners = new Set(
-    admitted.flatMap((entry) =>
-      entry.kind === "interaction" && entry.modelSource ? [entry.modelSource.owner] : [],
-    ),
-  );
-  const owner = owners.size === 1 ? owners.values().next().value : undefined;
+  const owner = admittedOwner;
   if (!owner || (child?.nativeTurnId === request.turnId && child.modelExecution)) {
     return undefined;
+  }
+  for (const entry of admitted) {
+    entry.modelSource?.assertCurrent();
   }
   const modelSource = retainNativeModelExecution(owner, request.turnId, request.threadId);
   if (!modelSource) {
@@ -599,26 +627,6 @@ function executionOwner(
   return modelSource.executionOwner;
 }
 
-function waitForModelSourceChange(state: ParentState, signal?: AbortSignal): Promise<void> {
-  signal?.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const remove = () => {
-      state.modelSourceWaiters?.delete(changed);
-      signal?.removeEventListener("abort", aborted);
-    };
-    const changed = () => {
-      remove();
-      resolve();
-    };
-    const aborted = () => {
-      remove();
-      reject(toErrorObject(signal?.reason, "Codex model source capture was aborted"));
-    };
-    (state.modelSourceWaiters ??= new Set()).add(changed);
-    signal?.addEventListener("abort", aborted, { once: true });
-  });
-}
-
 export async function captureNativeModelSource(
   request: NativeModelSourceRequest,
   dependencies: ModelSourceDependencies,
@@ -632,7 +640,8 @@ export async function captureNativeModelSource(
       dependencies.parents.get(request.threadId) ??
       dependencies.knownChildren.get(request.threadId)?.parent ??
       (request.parentThreadId ? dependencies.parents.get(request.parentThreadId) : undefined) ??
-      parent?.parent;
+      parent?.parent ??
+      findUnqualifiedNativeModelParent(request, dependencies.parents, dependencies.admissions);
     if (!state || !dependencies.isCurrent(state)) {
       return undefined;
     }
@@ -665,6 +674,38 @@ export async function captureNativeModelSource(
           ? !candidate.turnId
           : observedChildTurn && (!candidate.turnId || matchingCause(candidate, request))),
     );
+    const unqualified = [
+      ...state.owners.values(),
+      ...(parentExecution ? [parentExecution] : []),
+    ].filter(
+      (candidate) =>
+        candidate.unqualifiedModelExecution &&
+        !candidate.modelExecutionCancelled &&
+        !candidate.modelExecutionSettled &&
+        matchingCause(candidate, request),
+    );
+    const immediate = unqualified.filter((candidate) => candidate.turnId === request.parentTurnId);
+    const waitingOwners = immediate.length > 0 ? immediate : unqualified;
+    const waitingOwner = waitingOwners.length === 1 ? waitingOwners[0] : undefined;
+    if (waitingOwner) {
+      const capture = waitingOwner.modelSource?.capture();
+      let binding: NativeModelBinding | undefined;
+      try {
+        binding = capture?.source?.bindModelExecution?.(undefined);
+        if (!binding) {
+          return undefined;
+        }
+        binding.assertCurrent();
+        await waitForModelSourceChange(
+          state,
+          request.signal ? AbortSignal.any([request.signal, binding.signal]) : binding.signal,
+        );
+      } finally {
+        binding?.release();
+        capture?.release();
+      }
+      continue;
+    }
     if (
       !pending &&
       !dependencies.hasPendingInput(request) &&

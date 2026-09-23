@@ -90,6 +90,8 @@ export type CodexStartOrResumeThreadParams = {
   nativeHookRelayGeneration?: string;
   /** Session-layer PreToolUse hooks must survive authoritative managed hook requirements. */
   nativeHookRelayRequired?: boolean;
+  /** A retained operator source can keep legacy hooks off only while its model policy is absent. */
+  nativeModelAdmission?: "required" | "optional" | "disabled";
   nativeCodeModeEnabled?: boolean;
   nativeProviderWebSearchSupport?: CodexNativeWebSearchSupport;
   nativeCodeModeOnlyEnabled?: boolean;

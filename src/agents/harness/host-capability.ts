@@ -181,6 +181,7 @@ export function createAgentHarnessHostCapabilities(params: {
   attempt: AgentHarnessHostAttempt;
   pluginId: string;
   requiredNodeCommands?: readonly string[];
+  nativeModelPolicySupport?: "exact";
 }): {
   capabilities: AgentHarnessHostCapabilities;
   close: () => void;
@@ -196,6 +197,7 @@ export function createAgentHarnessHostCapabilities(params: {
   // Capture the selected harness declaration before plugin code can mutate it.
   // Full must not cover other commands merely because the same plugin owns them.
   const requiredNodeCommands = new Set(params.requiredNodeCommands);
+  const nativeModelPolicySupported = params.nativeModelPolicySupport === "exact";
   const operationalRunInstance = attempt.admittedRunContext.operationalRunInstance;
   const delegatedAuthority = getAdmittedRunDelegatedAuthority(attempt.admittedRunContext);
   if (!delegatedAuthority) {
@@ -468,13 +470,17 @@ export function createAgentHarnessHostCapabilities(params: {
   };
   const bindToolSurface: AgentHarnessHostCapabilities["bindToolSurface"] = (tools, options) =>
     bindTools(tools, options, () => {});
+  const bindModelExecution: AgentHarnessHostCapabilities["bindModelExecution"] =
+    nativeModelPolicySupported
+      ? (model) => bindHarnessModelExecution(attempt.admittedRunContext, model, assertActive)
+      : undefined;
   const capabilities: AgentHarnessHostCapabilities = Object.freeze({
     kind: "agent-harness-host-capability" as const,
     version: 1 as const,
     assertActive,
-    bindModelExecution: (model) =>
-      bindHarnessModelExecution(attempt.admittedRunContext, model, assertActive),
-    retainSourceAuthority: () => retainHarnessSource(attempt.admittedRunContext, assertActive),
+    ...(bindModelExecution ? { bindModelExecution } : {}),
+    retainSourceAuthority: () =>
+      retainHarnessSource(attempt.admittedRunContext, assertActive, nativeModelPolicySupported),
     reportOutputTokens: (outputTokens) => {
       assertActive();
       const data = emitAgentRunOutputTokens({

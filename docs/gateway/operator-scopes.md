@@ -211,6 +211,15 @@ inbound media preprocessing, and host-owned execution approval keep their
 existing service authority. Omitting `modelPolicy` preserves the role's existing
 model access, and shared-secret System access is unchanged.
 
+Native Codex staff work without a model policy has a limited attribution case
+when qualified native hooks are disabled or unavailable: previously accepted
+unrestricted input mixed with other work may continue under the receiver's valid
+authority after its sender loses authorization or becomes restricted. Direct and
+otherwise unambiguously bound work still observes revocation. See the
+[native model-policy boundary](/plugins/codex-harness/routing#operator-role-model-permissions).
+Visitor Access requires an explicit model policy; its Codex runs require the
+qualified integration.
+
 The optional `sandbox` policy defaults to `"inherit"`, which keeps the agent's
 configured sandbox mode. Set `sandbox: "required"` to sandbox every new session
 created by an authenticated person with that role, even when the agent's
@@ -229,8 +238,9 @@ and other sessions without a role-required sandbox keep their configured scope
 and workspace access.
 
 The Gateway records the authenticated creator and their sandbox requirement
-together before a new session first runs, including chat, Talk, recovery,
-forks, checkpoint branches, cron, outbound messages, and spawned children.
+together before a new session first runs, including chat, the OpenAI-compatible
+HTTP endpoints, Talk, recovery, forks, checkpoint branches, cron, outbound
+messages, and spawned children.
 Delegated child work inherits a required parent's original creator and sandbox
 policy, even after role changes. Recovery and branching requested by another
 person use that person's own role rather than the source session's policy.

@@ -1,9 +1,91 @@
+import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import type {
   ChildState,
   KnownChild,
+  NativeChildAdmissionEvidence,
+  NativeModelSourceRequest,
   ParentOwner,
   ParentState,
 } from "./native-subagent-monitor-types.js";
+
+export function waitForNativeModelSourceChange(
+  state: ParentState,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const remove = () => {
+      state.modelSourceWaiters?.delete(changed);
+      signal?.removeEventListener("abort", aborted);
+    };
+    const changed = () => {
+      remove();
+      resolve();
+    };
+    const aborted = () => {
+      remove();
+      reject(toErrorObject(signal?.reason, "Codex model source capture was aborted"));
+    };
+    (state.modelSourceWaiters ??= new Set()).add(changed);
+    signal?.addEventListener("abort", aborted, { once: true });
+  });
+}
+
+export function matchingNativeModelCause(
+  owner: ParentOwner,
+  request: NativeModelSourceRequest,
+): boolean {
+  return Boolean(
+    owner.turnId && (owner.turnId === request.parentTurnId || owner.turnId === request.rootTurnId),
+  );
+}
+
+export function matchingNativeModelAdmissions(
+  request: NativeModelSourceRequest,
+  admissions: ReadonlyMap<string, NativeChildAdmissionEvidence[]>,
+  parentThreadId?: string,
+): Array<Extract<NativeChildAdmissionEvidence, { kind: "interaction" }>> {
+  return [...admissions.values()]
+    .flat()
+    .filter(
+      (entry): entry is Extract<NativeChildAdmissionEvidence, { kind: "interaction" }> =>
+        entry.kind === "interaction" &&
+        (parentThreadId === undefined || entry.parentThreadId === parentThreadId) &&
+        entry.childThreadId === request.threadId &&
+        (entry.modelSourceRequiresInference ||
+          !(entry.modelSourceTurnId ?? entry.nativeTurnId) ||
+          (entry.modelSourceTurnId ?? entry.nativeTurnId) === request.turnId) &&
+        entry.modelSource !== undefined &&
+        matchingNativeModelCause(entry.modelSource.owner, request),
+    );
+}
+
+export function findUnqualifiedNativeModelParent(
+  request: NativeModelSourceRequest,
+  parents: ReadonlyMap<string, ParentState>,
+  admissions: ReadonlyMap<string, NativeChildAdmissionEvidence[]>,
+): ParentState | undefined {
+  const candidates = new Set(
+    matchingNativeModelAdmissions(request, admissions).flatMap((entry) => {
+      const state = parents.get(entry.parentThreadId);
+      return state && entry.modelSource?.owner.unqualifiedModelExecution ? [state] : [];
+    }),
+  );
+  for (const state of parents.values()) {
+    if (
+      [...state.owners.values()].some(
+        (owner) =>
+          owner.unqualifiedModelExecution &&
+          !owner.modelExecutionCancelled &&
+          !owner.modelExecutionSettled &&
+          matchingNativeModelCause(owner, request),
+      )
+    ) {
+      candidates.add(state);
+    }
+  }
+  return candidates.size === 1 ? candidates.values().next().value : undefined;
+}
 
 export function currentNativeModelExecution(
   threadId: string,

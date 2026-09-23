@@ -220,6 +220,9 @@ A cached pre-resume model is not authority for a different resumed model. Missin
 support rejects native-owned inference when the operator has a model policy.
 The method returns `undefined` when the run has no operator source; ordinary
 host action checks and native turn settlement retain their existing lifetimes.
+The host exposes the direct model binder only for a harness declaring exact
+support. Other harnesses retain an unknown-model guard through their existing
+source capability; introducing a model policy cancels that unqualified work.
 
 For accepted work that can select models after foreground completion, acquire
 `hostCapabilities.retainSourceAuthority()` while the host is active. Its

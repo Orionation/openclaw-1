@@ -24,7 +24,10 @@ import {
   getCodexInferenceThread,
   prepareCodexInferenceThreadConfig,
 } from "./inference-routing.js";
-import { assertCodexNativeHookRelayAllowed } from "./native-hook-relay.js";
+import {
+  assertCodexNativeHookRelayAllowed,
+  CodexManagedHooksOnlyError,
+} from "./native-hook-relay.js";
 import { resolveCodexNativeModelInputTools } from "./native-model-input-tools.js";
 import { resolveCodexNativeSkillIsolation } from "./native-skill-isolation.js";
 import { isCodexAppServerProfilerEnabled } from "./profiler-flag.js";
@@ -59,8 +62,11 @@ import {
 } from "./thread-requests.js";
 import { resolveCodexWebSearchPlan } from "./web-search.js";
 
-function assertCodexThreadInferenceAuthority(params: CodexStartOrResumeThreadParams): void {
-  if (params.inferenceRoute) {
+function assertCodexThreadInferenceAuthority(
+  params: CodexStartOrResumeThreadParams,
+  modelPolicyEnforced: boolean,
+): void {
+  if (params.inferenceRoute && modelPolicyEnforced) {
     return;
   }
   const host = params.params.hostCapabilities;
@@ -109,6 +115,9 @@ export async function prepareCodexThreadRequestContext(
     config: params.params.config,
   });
   const source = params.params.hostCapabilities.retainSourceAuthority?.();
+  const modelPolicyEnforced =
+    params.nativeModelAdmission === undefined ||
+    options.preflight.nativeModelInputTools !== undefined;
   let inference: Awaited<ReturnType<typeof prepareCodexInferenceThreadConfig>>;
   try {
     source?.assertCurrent();
@@ -118,6 +127,7 @@ export async function prepareCodexThreadRequestContext(
       binding: options.binding,
       clientId: options.clientId,
       operatorBacked: source !== undefined,
+      modelPolicyEnforced,
       modelProvider:
         options.binding?.preserveNativeModel || options.binding?.connectionScope === "supervision"
           ? options.binding.modelProvider
@@ -138,7 +148,7 @@ export async function prepareCodexThreadRequestContext(
   params.assertCurrent = () => {
     options.throwIfAborted();
     options.assertCurrent();
-    assertCodexThreadInferenceAuthority(params);
+    assertCodexThreadInferenceAuthority(params, modelPolicyEnforced);
   };
   params.assertCurrent();
   return {
@@ -207,8 +217,20 @@ export async function prepareCodexThreadLifecyclePreflight(params: CodexStartOrR
     cwd: params.cwd,
     signal: params.signal,
   });
-  if (params.nativeHookRelayRequired) {
-    await assertCodexNativeHookRelayAllowed(params.client, params.signal);
+  const nativeHooksRequired =
+    params.nativeHookRelayRequired || params.nativeModelAdmission === "required";
+  let modelAdmissionAvailable =
+    params.nativeModelAdmission !== undefined &&
+    (params.nativeModelAdmission !== "disabled" || nativeHooksRequired);
+  if (nativeHooksRequired || modelAdmissionAvailable) {
+    try {
+      await assertCodexNativeHookRelayAllowed(params.client, params.signal);
+    } catch (error) {
+      if (nativeHooksRequired || !(error instanceof CodexManagedHooksOnlyError)) {
+        throw error;
+      }
+      modelAdmissionAvailable = false;
+    }
   }
   // Slow resumes must be diagnosable without enabling a profiler beforehand.
   const lifecycleTiming = createCodexThreadLifecycleTimingTracker({
@@ -356,9 +378,10 @@ export async function prepareCodexThreadLifecyclePreflight(params: CodexStartOrR
     ? getCodexAppServerClientInstanceId(params.client)
     : undefined;
   return {
-    nativeModelInputTools: params.nativeHookRelayRequired
-      ? resolveCodexNativeModelInputTools(effectiveConfig.config)
-      : undefined,
+    nativeModelInputTools:
+      nativeHooksRequired || modelAdmissionAvailable
+        ? resolveCodexNativeModelInputTools(effectiveConfig.config)
+        : undefined,
     effectiveConfig,
     contextEngineBinding,
     dynamicToolsContainDeferred,

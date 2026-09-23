@@ -1,5 +1,6 @@
 /** Shared session persistence for agent attempt execution. */
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import { buildSessionCreationStamp } from "../../config/sessions/session-entry-provenance.js";
 import { mergeSessionSnapshotChanges } from "../../config/sessions/session-snapshot-merge.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 /** Parameters for merging and persisting a session entry update. */
@@ -10,8 +11,9 @@ type PersistSessionEntryParams = {
   storePath: string;
   initialEntry: SessionEntry;
   entry: SessionEntry;
-  shouldPersist?: (entry: SessionEntry | undefined) => boolean;
+  creation?: Parameters<typeof buildSessionCreationStamp>[0];
   assertCommitAllowed?: () => void;
+  shouldPersist?: (entry: SessionEntry | undefined) => boolean;
 };
 
 /** Persists one session entry while keeping the caller's in-memory store aligned. */
@@ -32,7 +34,10 @@ export async function persistAgentSession(
         return null;
       }
       if (!context.existingEntry) {
-        return params.entry;
+        return {
+          ...params.entry,
+          ...(params.creation ? buildSessionCreationStamp(params.creation) : {}),
+        };
       }
       if (context.existingEntry.sessionId !== params.initialEntry.sessionId) {
         return null;
@@ -49,6 +54,7 @@ export async function persistAgentSession(
       fallbackEntry: params.sessionStore[params.sessionKey] ?? params.entry,
       replaceEntry: true,
       assertCommitAllowed: params.assertCommitAllowed,
+      requireWriteSuccess: params.creation !== undefined,
     },
   );
   if (rejectedMissingEntry) {

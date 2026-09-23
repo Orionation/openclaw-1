@@ -539,6 +539,7 @@ function withoutInternalHarnessAuthority(
   const host = createAgentHarnessHostCapabilities({
     attempt: params,
     requiredNodeCommands: harness.cloudPlacement?.devicePlacement?.requiredNodeCommands,
+    nativeModelPolicySupport: harness.nativeModelPolicySupport,
     pluginId:
       ownerPluginId ??
       (() => {

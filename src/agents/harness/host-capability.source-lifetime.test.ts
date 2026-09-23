@@ -11,6 +11,7 @@ import {
   type AdmittedRunOperatorAuthority,
   type PreparedAgentRunAdmission,
 } from "../admitted-run-context.js";
+import { prepareOperatorModelPolicy } from "../operator-model-policy.js";
 import { createAgentHarnessHostCapabilities } from "./host-capability.js";
 
 const admissions: PreparedAgentRunAdmission[] = [];
@@ -19,6 +20,9 @@ const hosts: Array<ReturnType<typeof createAgentHarnessHostCapabilities>> = [];
 async function createSourceHost(
   operatorAuthority?: AdmittedRunOperatorAuthority,
   abortSignal?: AbortSignal,
+  nativeModelPolicySupport?: Parameters<
+    typeof createAgentHarnessHostCapabilities
+  >[0]["nativeModelPolicySupport"],
 ) {
   const runId = "retained-source";
   const admission = prepareAgentRunAdmission({
@@ -36,6 +40,7 @@ async function createSourceHost(
   const host = createAgentHarnessHostCapabilities({
     attempt: { runId, admittedRunContext, abortSignal },
     pluginId: "codex",
+    nativeModelPolicySupport,
   });
   hosts.push(host);
   return { admission, host };
@@ -125,7 +130,7 @@ it.each(["source assertion", "source signal", "lifecycle rotation"] as const)(
         }
       },
     });
-    const { host, admission } = await createSourceHost(source, foreground.signal);
+    const { host, admission } = await createSourceHost(source, foreground.signal, "exact");
     const retained = host.capabilities.retainSourceAuthority?.();
     let modelBinding: ReturnType<NonNullable<typeof host.capabilities.bindModelExecution>>;
     try {
@@ -175,7 +180,7 @@ it("signals retained work on gateway lifecycle rotation after its foreground clo
     scopes: ["operator.write"],
     assertCurrent: () => {},
   });
-  const { host, admission } = await createSourceHost(source);
+  const { host, admission } = await createSourceHost(source, undefined, "exact");
   const retained = host.capabilities.retainSourceAuthority?.();
   let modelBinding: ReturnType<NonNullable<typeof host.capabilities.bindModelExecution>>;
   try {
@@ -214,7 +219,7 @@ it("releases model authority when its retained work closes during acquisition", 
       };
     },
   });
-  const { host, admission } = await createSourceHost(source);
+  const { host, admission } = await createSourceHost(source, undefined, "exact");
   const retained = host.capabilities.retainSourceAuthority?.();
   try {
     if (!retained) {
@@ -266,5 +271,66 @@ it.each(["signal", "lifecycle"] as const)(
     } finally {
       retained?.release();
     }
+  },
+);
+
+it.each([false, true])(
+  "guards retained unknown-model work through policy introduction=%s and releases once",
+  async (introducePolicy) => {
+    let policy: AdmittedRunOperatorAuthority["modelPolicy"];
+    let holds = 0;
+    const listeners = new Set<() => void>();
+    const source = createAdmittedRunOperatorAuthority({
+      profileId: "retained-policy",
+      scopes: ["operator.write"],
+      assertCurrent: () => {},
+      get modelPolicy() {
+        return policy;
+      },
+      onModelPolicyChanged: (listener) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+      retain: () => {
+        holds += 1;
+        return () => {
+          holds -= 1;
+        };
+      },
+    });
+    const { host, admission } = await createSourceHost(source);
+    expect(host.capabilities.bindModelExecution).toBeUndefined();
+    const retained = host.capabilities.retainSourceAuthority?.();
+    if (!retained) {
+      throw new Error("expected retained source authority");
+    }
+    try {
+      host.close();
+      admission.close();
+      expect(holds).toBe(1);
+      expect(() => retained.assertCurrent()).not.toThrow();
+      if (introducePolicy) {
+        policy = prepareOperatorModelPolicy({
+          cfg: { agents: { defaults: { model: "fixture/a" } } },
+          policy: {},
+          manifestPlugins: [],
+        });
+        for (const listener of listeners) {
+          listener();
+        }
+        expect(retained.signal?.aborted).toBe(true);
+        expect(() => retained.assertCurrent()).toThrow("operator role cannot use this model");
+      } else {
+        expect(retained.signal?.aborted).toBe(false);
+        expect(() => retained.assertCurrent()).not.toThrow();
+      }
+    } finally {
+      retained.release();
+      retained.release();
+    }
+    expect(holds).toBe(0);
+    expect(listeners.size).toBe(0);
   },
 );

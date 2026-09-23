@@ -80,8 +80,9 @@ model mappings remain valid. Removing a model cancels affected inference while
 permitted work continues.
 
 Reusing a native child does not attach its creator's permissions permanently.
-A later turn uses its submitting operator's authority after the earlier turn
-settles. Sending input to an active turn requires the same original authority,
+A later turn with unambiguous source attribution uses its submitting operator's
+authority after the earlier turn settles. With the native hook integration active,
+sending input to an active turn requires the same original authority,
 including follow-up requests that native execution can consume in that turn. Native
 Guardian reviews and configured memory processing keep their existing service
 authority, verified from native request provenance and their owning execution or
@@ -99,9 +100,24 @@ AWS-signed requests, system-proxy profiles, custom native
 certificate files, and proxy settings that cannot preserve both upstream routing
 and private loopback access cannot establish this guarantee. OpenClaw rejects a
 restricted run on those paths before starting it. Roles without a model policy
-keep their existing native connection behavior. Introducing a model policy while
-an unqualified operator execution is active cancels that execution and its
-unqualified children.
+keep their existing native connection and optional-hook behavior. Introducing a
+model policy while an unqualified operator execution is active cancels directly owned and otherwise
+unambiguously bound work, including its unqualified children.
+
+When staff run without a model policy and qualified native hooks are disabled or
+unavailable, native execution can mix accepted input into an existing turn or
+combine queued input from several senders into a new turn without preserving
+unique sender attribution. Previously accepted unrestricted input that can no
+longer be attributed uniquely may continue under the receiving execution's valid
+authority after a contributing sender's authorization ends or becomes restricted.
+A matching native root alone does not prove unique attribution. OpenClaw does not
+interrupt independently authorized receiver work to guess which input it consumed.
+
+This limitation does not exempt newly restricted work or revocation of a directly
+or otherwise unambiguously bound source. Exact attribution requires the qualified
+native hook integration. Visitor Access requires an explicit model policy; its
+Codex runs require the qualified integration, so its normal restricted flow cannot
+enter this optional staff configuration.
 
 ## Deployment patterns
 

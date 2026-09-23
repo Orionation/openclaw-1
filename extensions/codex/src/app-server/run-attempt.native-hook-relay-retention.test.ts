@@ -589,7 +589,9 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
       params.runtimePlan = createCodexRuntimePlanFixture();
       params.onAgentEvent = vi.fn();
       setCodexTestModelSupportsTools(params, true);
-      const fixture = await createAdmittedHostCapabilityTestFixture(params);
+      const fixture = await createAdmittedHostCapabilityTestFixture(params, {
+        nativeModelPolicySupport: "exact",
+      });
       params.hostCapabilities = fixture.hostCapabilities;
       if (hasDeliveryScope) {
         params.agentHarnessTaskRuntimeScope = fixture.agentHarnessTaskRuntimeScope;
@@ -895,7 +897,9 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
     params.disableTools = false;
     params.runtimePlan = createCodexRuntimePlanFixture();
     setCodexTestModelSupportsTools(params, true);
-    const fixture = await createAdmittedHostCapabilityTestFixture(params);
+    const fixture = await createAdmittedHostCapabilityTestFixture(params, {
+      nativeModelPolicySupport: "exact",
+    });
     params.hostCapabilities = fixture.hostCapabilities;
 
     const beforeToolCall = vi.fn(async () => undefined);

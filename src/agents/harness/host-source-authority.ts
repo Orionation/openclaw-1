@@ -35,6 +35,7 @@ registerAgentEventLifecycleRotationHandler("harness-retained-sources", () => {
 export function retainHarnessSource(
   admittedRunContext: AdmittedRunContext,
   assertActive: () => void,
+  nativeModelPolicySupported = false,
 ): ReturnType<NonNullable<AgentHarnessHostCapabilities["retainSourceAuthority"]>> {
   assertActive();
   const lifecycleGeneration = getAgentRunLifecycleGeneration();
@@ -42,10 +43,20 @@ export function retainHarnessSource(
   if (!source) {
     return undefined;
   }
-  const release = source.retain?.();
+  const modelExecution = nativeModelPolicySupported
+    ? undefined
+    : bindOperatorModelExecution(source, undefined);
+  const release = nativeModelPolicySupported ? source.retain?.() : modelExecution?.release;
+  const assertSourceCurrent = () => {
+    if (nativeModelPolicySupported) {
+      source.assertCurrent();
+    } else {
+      modelExecution?.assertCurrent();
+    }
+  };
   try {
     assertActive();
-    source.assertCurrent();
+    assertSourceCurrent();
     assertActive();
   } catch (error) {
     release?.();
@@ -55,8 +66,9 @@ export function retainHarnessSource(
   let modelLifetime: AbortController | undefined;
   const lifecycle = new AbortController();
   retainedSources.add(lifecycle);
-  const signal = source.signal
-    ? AbortSignal.any([source.signal, lifecycle.signal])
+  const authoritySignal = modelExecution?.signal ?? source.signal;
+  const signal = authoritySignal
+    ? AbortSignal.any([authoritySignal, lifecycle.signal])
     : lifecycle.signal;
   const assertRetained = () => {
     if (released || getAgentRunLifecycleGeneration() !== lifecycleGeneration) {
@@ -66,7 +78,7 @@ export function retainHarnessSource(
   };
   const assertCurrent = () => {
     assertRetained();
-    source.assertCurrent();
+    assertSourceCurrent();
     assertRetained();
   };
   return Object.freeze({

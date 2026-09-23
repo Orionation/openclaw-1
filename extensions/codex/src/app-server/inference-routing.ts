@@ -16,7 +16,7 @@ export type { CodexInferenceThreadQualification } from "./inference-qualificatio
 type ThreadRoutes = {
   route: CodexInferenceProxy;
   providers: CodexInferenceProviderRoutes;
-  qualification: CodexInferenceThreadQualification;
+  qualification?: CodexInferenceThreadQualification;
 };
 type ProviderKind = "openai" | "azure" | "other";
 
@@ -25,7 +25,10 @@ type Owner = {
   memoryConfigured: boolean;
   routes: Map<string, Promise<CodexInferenceProxy>>;
   threads: Map<string, ThreadRoutes>;
-  handles: Map<CodexInferenceProxy, { provider: string; kind: ProviderKind }>;
+  handles: Map<
+    CodexInferenceProxy,
+    { provider: string; kind: ProviderKind; modelPolicyEnforced: boolean }
+  >;
   authRoute?: "apiKey" | "chatgpt";
 };
 // Shared clients survive duplicate module loads; their inference ownership must too.
@@ -156,6 +159,7 @@ async function prepareCodexInferenceRoute(params: {
   modelProvider?: string;
   config?: JsonObject;
   effectiveConfig?: CodexConfigReadResponse;
+  modelPolicyEnforced?: boolean;
   optionalProjection?: true;
   signal?: AbortSignal;
   assertCurrent: () => void;
@@ -320,12 +324,14 @@ async function prepareCodexInferenceRoute(params: {
   // A configured native startup service may outlive the foreground that created its thread.
   // generate_memories controls new thread recording, not processing of eligible prior history.
   owner.memoryConfigured ||= memoryFeature === true;
+  const modelPolicyEnforced = params.modelPolicyEnforced !== false;
   const key = JSON.stringify([
     provider,
     target.toString(),
     kind,
     preserveAzureUrlFeatures,
     preserveCodexBackendRoutes,
+    modelPolicyEnforced,
   ]);
   let pending = owner.routes.get(key);
   if (!pending) {
@@ -351,6 +357,7 @@ async function prepareCodexInferenceRoute(params: {
         bindModelExecution: createCodexInferenceModelBinding({
           client,
           provider,
+          modelPolicyEnforced,
           assertCurrent: assertClient,
           memoryConfigured: () => owner.memoryConfigured,
           captureModelSource: native.codexNativeSubagentMonitorRuntime.captureModelSource,
@@ -365,7 +372,7 @@ async function prepareCodexInferenceRoute(params: {
   assertCurrent();
   route.assertCurrent();
   params.client.protectPrivateTransportSecret(new URL(route.baseUrl).pathname.split("/")[1] ?? "");
-  owner.handles.set(route, { provider, kind });
+  owner.handles.set(route, { provider, kind, modelPolicyEnforced });
   return route;
 }
 
@@ -380,6 +387,8 @@ export async function prepareCodexInferenceThreadConfig(params: {
   effectiveConfig?: CodexConfigReadResponse;
   /** Captured from the issuing host, never from native request metadata. */
   operatorBacked?: boolean;
+  /** Parent context still uses this transport when optional native model hooks are unavailable. */
+  modelPolicyEnforced?: boolean;
   signal?: AbortSignal;
   assertCurrent: () => void;
 }): Promise<
@@ -396,7 +405,7 @@ export async function prepareCodexInferenceThreadConfig(params: {
   }
   const preserved =
     binding?.connectionScope === "supervision" || binding?.preserveNativeModel === true;
-  const retained =
+  let retained =
     preserved && binding?.clientId === params.clientId
       ? owner.threads.get(binding.threadId)
       : undefined;
@@ -405,8 +414,13 @@ export async function prepareCodexInferenceThreadConfig(params: {
     if (!retained) {
       return undefined;
     }
-    retained.qualification.assertCurrent();
-    if (!params.operatorBacked) {
+    retained.route.assertCurrent();
+    if (
+      owner.handles.get(retained.route)?.modelPolicyEnforced !==
+      (params.modelPolicyEnforced !== false)
+    ) {
+      retained = undefined;
+    } else if (!params.operatorBacked) {
       return {
         route: retained.route,
         providers: retained.providers,
@@ -652,13 +666,19 @@ export function bindCodexInferenceThread(
   };
   assertCurrent();
   // Older native children retain their configuration snapshot even if the parent later changes.
-  const qualification = Object.freeze({
-    assertCurrent,
-    hasProvider: (candidate: string) => {
-      assertCurrent();
-      return projected.has(candidate);
-    },
-  });
+  const qualification = owner.handles.get(route)?.modelPolicyEnforced
+    ? Object.freeze({
+        assertCurrent,
+        hasProvider: (candidate: string) => {
+          assertCurrent();
+          const projectedRoute = projected.get(candidate);
+          return (
+            projectedRoute !== undefined &&
+            owner.handles.get(projectedRoute)?.modelPolicyEnforced === true
+          );
+        },
+      })
+    : undefined;
   owner.threads.set(threadId, { route, providers: projected, qualification });
 }
 

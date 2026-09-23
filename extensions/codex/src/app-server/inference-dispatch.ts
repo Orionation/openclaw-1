@@ -64,6 +64,7 @@ export function authorizationFailure(error: unknown): string | undefined {
 export function createCodexInferenceModelBinding(params: {
   client: CodexAppServerClient;
   provider: string;
+  modelPolicyEnforced?: boolean;
   assertCurrent: () => void;
   memoryConfigured: () => boolean;
   captureModelSource: (
@@ -174,7 +175,6 @@ export function createCodexInferenceModelBinding(params: {
     let releaseAbort = () => {};
     try {
       captured.assertCurrent();
-      captured.source?.assertCurrent();
       signal.throwIfAborted();
       assertClient();
       if (reviewer || classifier) {
@@ -189,9 +189,12 @@ export function createCodexInferenceModelBinding(params: {
         try {
           const mapping = captured.modelMapping;
           model = bind(
-            mapping?.nativeModel.provider === provider && mapping.nativeModel.model === body.model
-              ? mapping.authorizedModel
-              : { provider, model: body.model },
+            params.modelPolicyEnforced === false
+              ? undefined
+              : mapping?.nativeModel.provider === provider &&
+                  mapping.nativeModel.model === body.model
+                ? mapping.authorizedModel
+                : { provider, model: body.model },
           );
         } catch {
           cancelNativeTurn();
@@ -216,7 +219,6 @@ export function createCodexInferenceModelBinding(params: {
         assertClient();
         try {
           captured.assertCurrent();
-          captured.source?.assertCurrent();
           model?.assertCurrent();
         } catch (error) {
           refuseOwner(error, signal);

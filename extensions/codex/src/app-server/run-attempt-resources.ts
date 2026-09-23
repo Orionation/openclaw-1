@@ -48,7 +48,10 @@ import {
   createIsolatedCodexAppServerClient,
   retainSharedCodexAppServerClientIfCurrent,
 } from "./shared-client.js";
-import type { CodexThreadFinalConfigPatchDecision } from "./thread-lifecycle-types.js";
+import type {
+  CodexStartOrResumeThreadParams,
+  CodexThreadFinalConfigPatchDecision,
+} from "./thread-lifecycle-types.js";
 import type { CodexAppServerThreadLifecycleBinding } from "./thread-lifecycle.js";
 import {
   isSameCodexAppServerThreadOwner,
@@ -76,8 +79,18 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
   const modelAdmissionSource = runtime.nativeToolSurfaceEnabled
     ? params.hostCapabilities.retainSourceAuthority?.()
     : undefined;
-  const nativeModelAdmissionRequired = modelAdmissionSource !== undefined;
-  modelAdmissionSource?.release();
+  let nativeModelAdmission: CodexStartOrResumeThreadParams["nativeModelAdmission"];
+  try {
+    nativeModelAdmission = modelAdmissionSource
+      ? modelAdmissionSource.modelPolicyRequired !== false
+        ? "required"
+        : options.nativeHookRelay?.enabled === false
+          ? "disabled"
+          : "optional"
+      : undefined;
+  } finally {
+    modelAdmissionSource?.release();
+  }
   let nativeProcessAuthorityReleased = false;
   const releaseNativeProcessAuthority = () => {
     if (!nativeProcessAuthorityReleased) {
@@ -488,7 +501,8 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     await previousRelay?.drain();
     connection.assertCurrent();
     const requiresProcessAdmission = nativeProcessAuthority && runtime.nativeToolSurfaceEnabled;
-    const requiresModelAdmission = nativeModelAdmissionRequired;
+    const requiresModelAdmission =
+      nativeModelAdmission !== undefined && decision.nativeModelInputTools !== undefined;
     const requiresExecutionAdmission = requiresProcessAdmission || requiresModelAdmission;
     const relayEvents =
       requiresExecutionAdmission && !nativeHookRelayEvents.includes("pre_tool_use")
@@ -595,7 +609,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     state,
     projectorRef,
     pendingNativePreToolUseFailures,
-    nativeModelAdmissionRequired,
+    nativeModelAdmission,
     nativeProcessAuthority,
     releaseNativeProcessAuthority,
     markTrajectoryEndRecorded: () => {

@@ -352,6 +352,7 @@ export async function bindProductionHarnessHostCapabilitiesForTest(
   const host = await createAgentHarnessHostCapabilitiesForTest({
     attempt,
     pluginId: "codex",
+    nativeModelPolicySupport: "exact",
     operatorSource,
   });
   params.hostCapabilities = host.capabilities;

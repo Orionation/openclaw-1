@@ -17,7 +17,6 @@ import type {
   NativeSubagentMonitorClient,
   NativeSubagentMonitorRuntime,
   ParentState,
-  NativeModelInputRequest,
   NativeModelToolInputRequest,
   NativeModelMapping,
   NativeModelSource,
@@ -36,7 +35,6 @@ type NativeMonitor = {
     request: NativeModelSourceRequest,
   ): Promise<NativeModelSourceCapture | undefined>;
   resolveModelThreadId(turnId: string): string | undefined;
-  admitModelInput(request: NativeModelInputRequest): void;
   prepareModelInput(request: NativeModelToolInputRequest): Promise<void>;
   releasePendingModelInputs(threadId: string): void;
 };
@@ -209,16 +207,6 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
         return Promise.reject(new Error("Codex native input has no admitted model source"));
       }
       return monitor.prepareModelInput(request);
-    },
-    admitModelInput: ({
-      client,
-      ...request
-    }: NativeModelInputRequest & { client: CodexAppServerClient }) => {
-      const monitor = monitors.get(client);
-      if (!monitor) {
-        throw new Error("Codex native input has no admitted model source");
-      }
-      monitor.admitModelInput(request);
     },
     retireParent: (client: CodexAppServerClient, parentThreadId: string): void => {
       monitors.get(client)?.retireParent(parentThreadId);

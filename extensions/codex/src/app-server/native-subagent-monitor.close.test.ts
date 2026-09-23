@@ -36,7 +36,13 @@ import { createClientHarness } from "./test-support.js";
 describe("Codex native close admission", () => {
   it("preserves exact input grants across warm replacement and clears leftovers after unsubscribe", async () => {
     const client = createClient();
-    client.setThreadRead("child-thread", threadRead({ turnId: "child-a", result: "A finished" }));
+    const target = threadRead({ turnId: "child-a", result: "A finished" });
+    target.thread.modelProvider = "test-provider";
+    client.setThreadRead("child-thread", target);
+    const qualification = {
+      assertCurrent: () => {},
+      hasProvider: (provider: string) => provider === "test-provider",
+    };
     ensureCodexAppServerClientRuntime(client.client, { agentDir: "/workspace/agent" });
     let settleOwnership: (threadId: string) => Promise<unknown> = async () => {
       throw new Error("Missing existing receiver ownership queue");
@@ -57,6 +63,7 @@ describe("Codex native close admission", () => {
       parentThreadId: "parent-thread",
       runtime: createRuntime(),
       modelSource: a,
+      configurationQualification: qualification,
     });
     first.bindTurn("parent-a");
     await notifyChildStarted(client);
@@ -81,16 +88,19 @@ describe("Codex native close admission", () => {
       client: client.client,
       parentThreadId: "parent-thread",
       modelSource: b,
+      configurationQualification: qualification,
     });
     second.bindTurn("parent-b");
     try {
       for (const submissionId of ["child-b", "child-c", "opaque-steer"]) {
-        factory.admitModelInput({
+        await factory.prepareModelInput({
           client: client.client,
           threadId: "parent-thread",
           turnId: "parent-b",
           itemId: submissionId,
-          targetThreadId: "child-thread",
+          target: "child-thread",
+          readQualification: () => qualification,
+          assertCurrent: () => {},
         });
         await client.notify(
           successfulSendInputOutput({

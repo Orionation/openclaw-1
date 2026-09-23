@@ -28,7 +28,6 @@ import {
   systemErrorFallbackCompletion,
 } from "./native-subagent-history-recovery.js";
 import {
-  admitNativeModelInput,
   prepareNativeModelToolInput,
   drainNativeChildModelAdmissions,
 } from "./native-subagent-model-input.js";
@@ -62,7 +61,6 @@ import type {
   KnownChild,
   MonitorOptions,
   NativeChildAdmissionEvidence,
-  NativeModelInputRequest,
   NativeModelToolInputRequest,
   NativeModelMapping,
   NativeModelSourceCapture,
@@ -414,6 +412,21 @@ class Monitor {
       onExecutionAdmitted: (known, threadId) => {
         this.admitFollowupChild(known, threadId);
       },
+      registerChildExecution: (state, modelRequest, agentPath) => {
+        this.registerChildThread(
+          state,
+          {
+            runId: codexNativeSubagentRunId(modelRequest.threadId, modelRequest.turnId),
+            childThreadId: modelRequest.threadId,
+            nativeTurnId: modelRequest.turnId,
+          },
+          {
+            agentPath,
+            nativeParentThreadId: modelRequest.parentThreadId,
+            observedTurns: [{ turnId: modelRequest.turnId, state: "active" }],
+          },
+        );
+      },
       isCurrent: (state) =>
         !this.disposed &&
         !this.retiredParentStates.has(state) &&
@@ -428,17 +441,6 @@ class Monitor {
       this.knownChildren,
       this.childStates,
       (state) => !this.disposed && !this.retiredParentStates.has(state),
-    );
-  }
-
-  admitModelInput(request: NativeModelInputRequest): void {
-    admitNativeModelInput(
-      request,
-      this.parentStates,
-      this.knownChildren,
-      this.childStates,
-      this.pendingChildAdmissionEvidence,
-      (state, owner, input, count) => this.submissions.admitModelInput(state, owner, input, count),
     );
   }
 
@@ -1637,9 +1639,14 @@ class Monitor {
   ): void {
     this.prepareReceiverChild(state, threadId);
     const known = this.knownChildren.get(threadId);
+    const admissionOwner = owner ?? interaction.modelOwner;
+    const unqualified =
+      admissionOwner?.unqualifiedModelExecution &&
+      !admissionOwner.modelExecutionSettled &&
+      !admissionOwner.modelExecutionCancelled;
     if (
       (known && known.parent !== state) ||
-      (!known && this.recovery.pendingChildRecoveries(state, threadId).length === 0)
+      (!known && !unqualified && this.recovery.pendingChildRecoveries(state, threadId).length === 0)
     ) {
       return;
     }
@@ -1649,7 +1656,6 @@ class Monitor {
     if (known && agentPath) {
       this.registerAgentPath(state, threadId, agentPath);
     }
-    const admissionOwner = owner ?? interaction.modelOwner;
     const parentTurnId = interaction.parentTurnId ?? admissionOwner?.turnId;
     this.bufferPendingChildAdmissionEvidence(parentTurnId, {
       kind: "interaction",
@@ -1663,6 +1669,9 @@ class Monitor {
       ...(owner ? { owner } : {}),
       ...(interaction.modelOwner ? { modelOwner: interaction.modelOwner } : {}),
     });
+    if (!known && unqualified) {
+      admissionOwner.onDirectChildAccepted?.();
+    }
     if (!known || (!known.assignment.terminal && !known.assignment.nativeTurnId)) {
       this.associateUnregisteredChildInteractions(state, threadId);
     }

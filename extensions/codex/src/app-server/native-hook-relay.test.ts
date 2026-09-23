@@ -337,6 +337,17 @@ describe("Codex native hook relay managed policy", () => {
     "retains only the exact V1 Started model grant after foreground closure (%s)",
     async (order) => {
       const client = createClient();
+      const qualification = {
+        assertCurrent: () => {},
+        hasProvider: (provider: string) => provider === "test-provider",
+      };
+      const target = threadRead({
+        turnId: "child-a",
+        threadStatus: order === "active predecessor" ? "active" : "idle",
+        status: order === "active predecessor" ? "inProgress" : "completed",
+      });
+      target.thread.modelProvider = "test-provider";
+      client.setThreadRead("child-thread", target);
       const bindModelExecution: NonNullable<NativeModelSource["bindModelExecution"]> = (model) => {
         if (
           model?.provider !== "test-provider" ||
@@ -373,7 +384,11 @@ describe("Codex native hook relay managed policy", () => {
           recoveryPollDelaysMs: [],
         },
       );
-      const first = monitor.registerParent({ parentThreadId: "parent-thread", modelSource: a });
+      const first = monitor.registerParent({
+        parentThreadId: "parent-thread",
+        modelSource: a,
+        configurationQualification: qualification,
+      });
       first.bindTurn("parent-a", mappingA);
       await notifyChildStarted(client);
       await client.notify({
@@ -406,13 +421,19 @@ describe("Codex native hook relay managed policy", () => {
       if (order !== "active predecessor") {
         await completeOriginal();
       }
-      const second = monitor.registerParent({ parentThreadId: "parent-thread", modelSource: b });
+      const second = monitor.registerParent({
+        parentThreadId: "parent-thread",
+        modelSource: b,
+        configurationQualification: qualification,
+      });
       second.bindTurn("parent-b", mappingB);
-      monitor.admitModelInput({
+      await monitor.prepareModelInput({
         threadId: "parent-thread",
         turnId: "parent-b",
         itemId: "start-b",
-        targetThreadId: "child-thread",
+        target: "child-thread",
+        readQualification: () => qualification,
+        assertCurrent: () => {},
       });
       const controller = new AbortController();
       const request = {
@@ -456,19 +477,29 @@ describe("Codex native hook relay managed policy", () => {
         expect(original.assertCurrent).not.toThrow();
         expect(b.release).not.toHaveBeenCalled();
         if (order === "receipt first") {
+          const pendingTarget = threadRead({
+            turnId: "child-b",
+            threadStatus: "active",
+            status: "inProgress",
+          });
+          pendingTarget.thread.modelProvider = "test-provider";
+          client.setThreadRead("child-thread", pendingTarget);
           const foreign = monitor.registerParent({
             parentThreadId: "parent-thread",
             modelSource: { ...b, sourceIdentity: {}, release: vi.fn() },
+            configurationQualification: qualification,
           });
           foreign.bindTurn("foreign-turn");
-          expect(() =>
-            monitor.admitModelInput({
+          await expect(
+            monitor.prepareModelInput({
               threadId: "parent-thread",
               turnId: "foreign-turn",
               itemId: "steer-pending-model",
-              targetThreadId: "child-thread",
+              target: "child-thread",
+              readQualification: () => qualification,
+              assertCurrent: () => {},
             }),
-          ).toThrow("same admitted model source");
+          ).rejects.toThrow("same admitted model source");
           await foreign.unregister();
         }
         if (order === "active predecessor") {
