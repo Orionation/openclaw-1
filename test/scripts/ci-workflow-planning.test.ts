@@ -282,7 +282,7 @@ function runCiManifestFixture(options: {
                 OPENCLAW_CI_TEST_PROOF_TIER: String(options.includeProofTests),
               },
               requiresDist: false,
-              runner: runson ? "runson-c8i-2xlarge" : "ubuntu-24.04",
+              runner: runson ? "runson-c8a-2xlarge" : "ubuntu-24.04",
               shardName: runson ? "changed-runson-cron" : "bundled-node-plan",
             }];
           };
@@ -3910,23 +3910,18 @@ describe("ci workflow guards", () => {
       expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "qualification Node rows"),
     ).include as Record<string, unknown>[];
     const cron = expectDefined(
-      rows.find((row) => row.runner === "runson-c8i-2xlarge"),
+      rows.find((row) => row.runner === "runson-c8a-2xlarge"),
       "RunsOn cron row",
     );
     expect(cron.env).toMatchObject({ OPENCLAW_VITEST_MAX_WORKERS: "2" });
-    for (const [provider, runner] of [
-      ["blacksmith", "blacksmith-32vcpu-ubuntu-2404"],
-      ["github", "ubuntu-24.04"],
-    ] as const) {
-      expect(
-        rows.find((row) => row.check_name === `checks-node-runson-cron-${provider}-control`),
-      ).toEqual({
-        ...cron,
-        check_name: `checks-node-runson-cron-${provider}-control`,
-        shard_name: `runson-cron-${provider}-control`,
-        runner,
-      });
-    }
+    expect(
+      rows.find((row) => row.check_name === "checks-node-runson-cron-blacksmith-control"),
+    ).toEqual({
+      ...cron,
+      check_name: "checks-node-runson-cron-blacksmith-control",
+      shard_name: "runson-cron-blacksmith-control",
+      runner: "blacksmith-32vcpu-ubuntu-2404",
+    });
     const ordinaryPr = runCiManifestFixture({
       ...fixture,
       eventName: "pull_request",
@@ -3936,8 +3931,8 @@ describe("ci workflow guards", () => {
     const ordinaryRows = JSON.parse(
       expectDefined(ordinaryPr.outputs.checks_node_core_nondist_matrix, "ordinary PR Node rows"),
     ).include as Record<string, unknown>[];
-    expect(rows).toHaveLength(ordinaryRows.length + 2);
-    expect(ordinaryRows.some((row) => row.runner === "runson-c8i-2xlarge")).toBe(true);
+    expect(rows).toHaveLength(ordinaryRows.length + 1);
+    expect(ordinaryRows.some((row) => row.runner === "runson-c8a-2xlarge")).toBe(true);
     expect(ordinaryRows.some((row) => String(row.check_name).endsWith("-control"))).toBe(false);
     const fastRows = JSON.parse(
       expectDefined(manifest.outputs.checks_fast_core_matrix, "qualification fast checks"),

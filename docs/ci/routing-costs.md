@@ -57,10 +57,44 @@ Numbered compact bins change when membership changes. A matching suffix does not
 
 The next qualification extends the existing opt-in route to non-build 32-class
 Node rows on AMD `c8a.4xlarge` (16 vCPUs, 32 GiB) and Control UI E2E on
-`c8i.2xlarge` (8 vCPUs, 16 GiB). Cron is downsized to that same Intel class.
+`c8i.2xlarge` (8 vCPUs, 16 GiB). Cron uses AMD `c8a.2xlarge` at 8 vCPUs and
+16 GiB after the Intel comparison below exceeded the slowdown limit.
 Hybrid remains the packing owner. Test selectors, worker caps, serial admission,
 memory gates and timeouts are unchanged. No additional hosted rows are admitted
-while hosted queue pressure remains unresolved. Runtime builds stay on Blacksmith.
+while hosted queue pressure remains unresolved. Runtime builds and the measured
+update-CLI storage envelope stay on Blacksmith.
+
+The first expanded [main qualification](https://github.com/openclaw/openclaw/actions/runs/35815956831)
+at `c2bca829359` used 166.45 Blacksmith machine-minutes / $5.8117 versus the
+327.88-minute / $17.2237 baseline: a raw 49.23% reduction with broader UI/Windows
+coverage. Verified launch-through-completion AWS allocations add $2.6033 at the
+observed Spot/on-demand reference rates, for $8.4150 before ancillary charges.
+It failed in 18m03s: one Spot interruption, failures on the retained real-Gateway
+path, and a 123-second hosted gate wait. This is not a green performance qualification.
+
+The [PR-shaped qualification](https://github.com/openclaw/openclaw/actions/runs/35815959256)
+at that same head passed in 24m24s, using 206.47 Blacksmith minutes / $5.8211 and
+$3.3443 of observed-market AWS allocation estimates. Five AMD jobs waited
+573–578 seconds before assignment; the extra hosted cron control was the final
+718-second compute job. The hosted comparator is now removed because hosted
+cron is not a candidate route; the complete cron suite and Blacksmith comparator
+remain. Removing it alone does not solve the separate AWS admission delay.
+
+Two execution exceptions determine the current routing. Identical cron contracts
+on that same head took 420 seconds on Intel 8-vCPU Spot versus 324 on Blacksmith,
+a 29.6% regression; the candidate switches that row to AMD while preserving its
+two-worker ceiling. The matching update-CLI row took 732 versus 524 seconds
+(39.7% slower), concentrated in `src/cli/update-cli.test.ts`, with nearly unchanged
+CPU work. Its existing Blacksmith allocation preserves the row's measured worker
+and memory policy; the advertised 8-class supplies only two CPUs and cannot
+preserve that admission. No storage or fixture timeout workaround is added.
+Both revised routes still require native verification at their new head.
+
+All eight Control UI rows passed on Intel Spot, with identical per-shard file
+inventories and complete-job times 1–10% shorter than their earlier Blacksmith
+runs. The historical Gateway history-reader LRU assertion passed in 5.27 seconds
+on AMD. Cross-head inventory comparisons do not establish identical source bytes;
+the qualification PR records those source and coverage differences explicitly.
 
 [Main baseline 35810905247](https://github.com/openclaw/openclaw/actions/runs/35810905247)
 reported eight actual CPUs in every one of its forty 32-class jobs. Test-step
@@ -87,8 +121,8 @@ and the control plane. Record exact-head per-class timings and allocation facts
 in the qualification PR before claiming savings or the fifteen-minute objective.
 
 For fallback budgeting, the September 23 [Vantage instance catalog](https://instances.vantage.sh/)
-lists Linux on-demand at $0.86216/hour for `c8a.4xlarge` and $0.37484/hour for
-`c8i.2xlarge` in that region. The same entire large slice would cost about $3.394
+lists Linux on-demand at $0.86216/hour for `c8a.4xlarge`, $0.43108/hour for
+`c8a.2xlarge`, and $0.37484/hour for `c8i.2xlarge` in that region. The same entire large slice would cost about $3.394
 at equal runtime or $4.243 at 25% longer, before overhead. This secondary public
 reference is not a billing receipt or evidence that fallback occurred.
 
@@ -101,7 +135,7 @@ fixture timing out, while NVMe variants failed an overlay-mount verifier before
 tests. Current fixture seeding skips unrelated maintenance; only a fresh AWS run
 can establish that it resolves the earlier timeout.
 
-The opt-in `runson` profile derives from hybrid and extracts the three `core-runtime-cron-parallel-*` children into one serial job on `c8i.8xlarge`: 32 vCPUs, 64 GiB RAM, `ubuntu24-full-x64`, and an 80 GB gp3 root. On the retained cron comparison inventory, all 258 files kept their two-worker job and group ceilings, and the source Blacksmith jobs retained their other children. RunsOn inherits hybrid's current splitting and packing before adding its cron row. Current inventory counts and pricing are recorded in [measured compact packing](/ci/routing-costs#measured-compact-packing); the earlier fixed nine-to-four projection is not a universal result. The pilot's eight-worker, 156-second cron wall remains historical context, while the complete two-worker comparison below owns the available provider evidence.
+The initial opt-in `runson` profile derived from hybrid and extracted the three `core-runtime-cron-parallel-*` children into one serial job on `c8i.8xlarge`: 32 vCPUs, 64 GiB RAM, `ubuntu24-full-x64`, and an 80 GB gp3 root. On that retained cron comparison inventory, all 258 files kept their two-worker job and group ceilings, and the source Blacksmith jobs retained their other children. The historical inventory counts and pricing are recorded in [measured compact packing](/ci/routing-costs#measured-compact-packing); the earlier fixed nine-to-four projection is not a universal result. The pilot's eight-worker, 156-second cron wall remains historical context, while the complete two-worker comparison below records that earlier provider evidence.
 
 The compatible CLI observations retain **558 and 703-second forecasts including one 60-second setup allowance**. Separating their serial pair does not establish a 600-second maximum for each indivisible child. Eligible serial tooling pairs now split above a 600-second complete-wall estimate; packing separate short jobs uses a 720-second admission limit. These are placement estimates, not raised test deadlines or guarantees about the fifteen-minute workflow wall.
 

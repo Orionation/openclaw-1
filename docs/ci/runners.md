@@ -210,10 +210,11 @@ Non-build Node rows assigned the Blacksmith 32-class use `c8a.4xlarge`
 (16 vCPUs, 32 GiB). This preserves the memory floor for two overlapping children
 and the isolated Gateway cohort. The job ceiling remains eight workers;
 overlapping children and explicit group/job pins retain their smaller limits.
-Runtime preparation and dist rows retain Blacksmith.
+Runtime preparation, dist rows, and the measured update-CLI storage envelope
+retain their Blacksmith capacity.
 
-The three `core-runtime-cron-parallel-*` children share one serial `c8i.2xlarge`
-job (8 vCPUs, 16 GiB), retaining two workers. Control UI E2E also uses
+The three `core-runtime-cron-parallel-*` children share one serial `c8a.2xlarge`
+job (8 vCPUs, 16 GiB), retaining two workers. Control UI E2E uses
 `c8i.2xlarge` with its existing one/two-worker limits. The browser-extension row
 keeps its hybrid route. Every Spot row uses `ubuntu24-full-x64` and an 80 GB gp3
 root; no NVMe, sticky disk, warm pool, inventory or deadline change is enabled.
@@ -230,10 +231,11 @@ remains unchanged during qualification. A maintainer can instead dispatch
 `ci.yml` with `runner_backend=runson`, `release_gate=true`,
 `pull_request_number`, and `target_ref` set to the full current PR head SHA.
 The workflow branch must be that PR's canonical branch and head, and the
-existing maintainer admission must pass. The qualification adds two identical
-cron controls, on Blacksmith and GitHub, with the same pinned Node version and
-two-worker ceiling. They count against the final Node cap (101/130 for this
-inventory) and are absent from normal PR plans. A qualification must select cron
+existing maintainer admission must pass. The qualification adds one identical
+Blacksmith cron control with the same pinned Node version and two-worker ceiling.
+It counts against the final Node cap and is absent from normal PR plans. The
+rejected hosted cron benchmark no longer adds a critical-path hosted job.
+A qualification must select cron
 tests; otherwise preflight fails before allocating comparison runners. Qualification uses the profile’s
 normal downstream placement, read-only cache admission, and lint partitions.
 Its preflight remains hosted until authorization succeeds and is counted in
@@ -244,7 +246,7 @@ untrusted or unrelated targets cannot use this override.
 For a main-shaped measurement, set `ci_shape=main` with the same exact-head
 PR admission and choose `runner_backend=hybrid` or `runson`. This uses push
 coverage, the 70-row Node cap, Node runtime, and ordinary main proof/native
-selection. It omits PR extension fallback and the two cron comparison controls;
+selection. It omits PR extension fallback and the cron comparison control;
 it does not add full-manual release-only work. Raw GitHub event/ref still own
 trust, concurrency, cache publication and provenance. The initial preflight is
 hosted and included in the measured wall. Ordinary dispatches retain
@@ -261,7 +263,8 @@ The existing GitHub App handles this label route. It does not require a new AWS
 login from the operator, though the expired operator SSO session prevents current
 administrative, selected-AZ price, and teardown verification. The public AWS feed
 supplies regional Spot references without authentication: $0.3081/hour for
-`c8a.4xlarge` and $0.1763/hour for `c8i.2xlarge` in `us-east-1`, fetched
+`c8a.4xlarge`, $0.1615/hour for `c8a.2xlarge`, and $0.1763/hour for
+`c8i.2xlarge` in `us-east-1`, fetched
 September 23, 2026. These exclude launch/teardown, storage and other charges. See the
 [price source, timestamp, and measured allocation estimate](/ci/routing-costs#runson-remains-unqualified).
 No interactive login is part of qualification.

@@ -10137,11 +10137,11 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       runnerProfile: "hybrid",
       runnerEnvironment: "self-hosted",
       preflightOutputs: { node_runner_backend: "runson" },
-      matrix: { runner: "runson-c8i-2xlarge", check_name: "cron-1", shard_name: "runson-cron" },
+      matrix: { runner: "runson-c8a-2xlarge", check_name: "cron-1", shard_name: "runson-cron" },
     } as const;
     const label = evaluateWorkflowExpression(job["runs-on"], context);
     expect(label).toBe(
-      "runs-on=123-cron-1/family=c8i.2xlarge/cpu=8/ram=16/spot=true/retry=false/image=ubuntu24-full-x64/volume=80gb",
+      "runs-on=123-cron-1/family=c8a.2xlarge/cpu=8/ram=16/spot=true/retry=false/image=ubuntu24-full-x64/volume=80gb",
     );
     expect(
       evaluateWorkflowExpression(job["runs-on"], {
@@ -10316,7 +10316,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "c8a.4xlarge",
     );
     expect(evaluateWorkflowExpression(allocation.env.EXPECTED_RUNSON_INSTANCE_TYPE, context)).toBe(
-      "c8i.2xlarge",
+      "c8a.2xlarge",
     );
     const initialize = expectDefined(
       job.steps.find((step: WorkflowStep) => step.name === "Initialize RunsOn"),

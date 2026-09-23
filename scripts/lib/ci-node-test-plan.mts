@@ -3908,7 +3908,7 @@ function routeRunsOnJobs(
     routed.push({
       checkName: "checks-node-runson-cron",
       shardName: "runson-cron",
-      runner: "runson-c8i-2xlarge",
+      runner: "runson-c8a-2xlarge",
       groups: cronGroups,
       requiresDist: false,
       planConcurrency: 1,
@@ -3932,11 +3932,18 @@ function routeRunsOnJobs(
       // The 32-class supplies eight CPUs and 31 GiB. Preserve its memory floor
       // for overlapping children and the eight-worker isolated Gateway cohort.
       // Runtime preparation retains Blacksmith until its complete flow qualifies.
+      // The update CLI envelope regressed by 40% on AWS without more CPU work.
+      // Keep its measured Blacksmith worker and memory allocation.
       if (
         job.runner !== EXTRA_LARGE_NODE_TEST_RUNNER ||
         job.requiresDist ||
         job.pretestBuildMode ||
-        job.groups.some((group) => group.requiresDist || group.pretestBuildMode)
+        job.groups.some(
+          (group) =>
+            group.requiresDist ||
+            group.pretestBuildMode ||
+            group.includePatterns?.includes("src/cli/update-cli.test.ts"),
+        )
       ) {
         return job;
       }
