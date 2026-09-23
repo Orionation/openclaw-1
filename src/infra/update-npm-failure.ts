@@ -4,6 +4,7 @@ import {
   redactSupportDiagnosticLine,
   type SupportRedactionContext,
 } from "../logging/diagnostic-support-redaction.js";
+import { truncateUtf8Prefix } from "../utils/utf8-truncate.js";
 import type { UpdateFailureFact } from "./update-failure-facts.js";
 
 const NPM_FAILURE_CODES = [
@@ -47,20 +48,16 @@ function npmFailureCode(value: string | undefined): NpmFailureCode {
 }
 
 function sanitizeNpmLines(lines: readonly string[], context: SupportRedactionContext): string[] {
-  const messages = lines.map((line) =>
-    redactSupportDiagnosticLine(line, context, Number.MAX_SAFE_INTEGER).replace(
+  const marker = " …[truncated]";
+  return lines.slice(0, 5).map((line) => {
+    const message = redactSupportDiagnosticLine(line, context, Number.MAX_SAFE_INTEGER).replace(
       /^(npm (?:ERR!|error) code)\s+\S+/u,
       (_match, prefix: string) => `${prefix} ${npmFailureCode(line.split(/\s+/u)[3])}`,
-    ),
-  );
-  const bounded = messages.filter((message) => Buffer.byteLength(message) <= 200);
-  const omitted = messages.length - bounded.length;
-  return omitted
-    ? [
-        ...bounded.slice(0, 4),
-        `npm error (${omitted} lines omitted: exceed 200-byte diagnostic limit)`,
-      ]
-    : bounded.slice(0, 5);
+    );
+    return Buffer.byteLength(message) > 200
+      ? `${truncateUtf8Prefix(message, 200 - Buffer.byteLength(marker))}${marker}`
+      : message;
+  });
 }
 
 /** Capture npm's error lines before command tails or permission guidance replace them. */

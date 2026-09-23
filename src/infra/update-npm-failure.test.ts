@@ -97,10 +97,13 @@ describe("npm install failure reports", () => {
     ["ETARGET", "Check the configured npm registry"],
     ["ECONNRESET", "npm failure code: ECONNRESET"],
     ["PRIVATE_IDENTIFIER", "npm failure code: unknown"],
-  ])("retains whole stdout diagnostic lines and classifies %s", async (code, guidance) => {
-    const cause = "npm error install failed while preparing package";
-    const detail = "npm error retained detail after oversized lines";
-    const omitted = "npm error (20 lines omitted: exceed 200-byte diagnostic limit)";
+  ])("bounds the first five npm lines for %s", async (code, guidance) => {
+    const cause = "npm error install failed while preparing package: ";
+    const longCause = `${cause}${"🦞".repeat(200)}`;
+    const exactLimit = `npm error ${"x".repeat(190)}`;
+    const secret = "fixture-only-secret".repeat(30);
+    const fifth = "npm error retained fifth diagnostic";
+    const marker = " …[truncated]";
     const step = await runStep({
       name: "package-install-omit-optional",
       argv: ["npm", "install", "-g", "openclaw"],
@@ -111,35 +114,57 @@ describe("npm install failure reports", () => {
         stderr: "",
         stdout: [
           `npm error code ${code}`,
-          cause,
-          ...Array.from({ length: 20 }, () => `npm error ${"🦞".repeat(200)}`),
-          detail,
+          longCause,
+          exactLimit,
+          `npm error token=${secret}`,
+          fifth,
+          "npm error sixth diagnostic",
         ].join("\n"),
       }),
       stepIndex: 0,
       totalSteps: 1,
     });
-    const excerpt = step.failureFacts?.map((fact) => fact.message).join("\n") ?? "";
-    expect(excerpt.split("\n")).toEqual([
+    const messages = step.failureFacts?.map((fact) => fact.message) ?? [];
+    expect(messages).toEqual([
       `npm error code ${code === "PRIVATE_IDENTIFIER" ? "unknown" : code}`,
-      cause,
-      detail,
-      omitted,
+      expect.stringContaining(cause),
+      exactLimit,
+      expect.stringMatching(/^npm error token=/u),
+      fifth,
     ]);
-    expect(Buffer.byteLength(excerpt)).toBeLessThanOrEqual(1024);
-    expect(excerpt.split("\n").length).toBeLessThanOrEqual(12);
-    const report = await prepareUpdateFailureReport(
-      {
-        attemptId: "npm-bound",
-        result: { mode: "npm", status: "error", steps: [step], durationMs: 1 },
-      },
-      context,
-    );
-    expect(report.body).toContain(guidance);
-    for (const line of [cause, detail, omitted]) {
-      expect(report.body).toContain(`- ${line}\n`);
+    const truncated = messages[1] ?? "";
+    expect(truncated.endsWith(marker)).toBe(true);
+    expect(longCause.startsWith(truncated.slice(0, -marker.length))).toBe(true);
+    expect(Buffer.byteLength(truncated)).toBeGreaterThan(196);
+    for (const message of messages) {
+      expect(Buffer.byteLength(message ?? "")).toBeLessThanOrEqual(200);
     }
-    expect(report.body).not.toContain("PRIVATE_IDENTIFIER");
-    expect(report.body).not.toContain("\ufffd");
+    expect(messages[2]).not.toContain(marker);
+    expect(messages[3]).not.toContain(marker);
+    const excerpt = messages.join("\n");
+    expect(Buffer.byteLength(excerpt)).toBeLessThanOrEqual(1024);
+    expect(excerpt).not.toContain("fixture-only-secret");
+    expect(excerpt).not.toContain("omitted");
+    expect(excerpt).not.toContain("sixth diagnostic");
+    for (const recorded of [false, true]) {
+      const report = await prepareUpdateFailureReport(
+        {
+          attemptId: "npm-bound",
+          result: { mode: "npm", status: "error", steps: recorded ? [] : [step], durationMs: 1 },
+          ...(recorded
+            ? { recordedRun: { runId: "npm-bound", steps: updateRunStepsFromResultStep(step) } }
+            : {}),
+        },
+        context,
+      );
+      expect(report.body).toContain(guidance);
+      for (const line of [messages[0], truncated, exactLimit, fifth]) {
+        expect(report.body).toContain(`- ${line}\n`);
+      }
+      expect(report.body).toMatch(/^- npm error token=[^\n]+$/mu);
+      expect(report.body).not.toContain("fixture-only-secret");
+      expect(report.body).not.toContain("PRIVATE_IDENTIFIER");
+      expect(report.body).not.toContain("\ufffd");
+    }
   });
 });
