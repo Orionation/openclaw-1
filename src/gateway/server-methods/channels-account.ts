@@ -78,16 +78,16 @@ export async function logoutChannelAccount(
     assertRequestCurrent: () => void;
   },
 ): Promise<ChannelLogoutPayload> {
+  const isRuntimeCurrent = () =>
+    params.context.getGatewayMethodRegistry?.() === params.methodRegistry &&
+    (!params.methodRegistry ||
+      getPluginRuntimeGatewayRequestScope()?.pluginRegistry ===
+        params.methodRegistry.pluginRegistry) &&
+    params.context.getRuntimeConfig() === params.cfg &&
+    params.context.isConfigReloadSettled();
   const assertCurrent = () => {
     params.assertRequestCurrent();
-    if (
-      params.context.getGatewayMethodRegistry?.() !== params.methodRegistry ||
-      (params.methodRegistry &&
-        getPluginRuntimeGatewayRequestScope()?.pluginRegistry !==
-          params.methodRegistry.pluginRegistry) ||
-      params.context.getRuntimeConfig() !== params.cfg ||
-      !params.context.isConfigReloadSettled()
-    ) {
+    if (!isRuntimeCurrent()) {
       throw new Error(`Channel ${params.channelId} changed during logout; retry the request.`);
     }
   };
@@ -110,13 +110,14 @@ export async function logoutChannelAccount(
     account,
     runtime: defaultRuntime,
   });
-  assertCurrent();
+  params.assertRequestCurrent();
   if (!result) {
     throw new Error(`Channel ${params.channelId} does not support logout`);
   }
   const cleared = result.cleared;
   const loggedOut = typeof result.loggedOut === "boolean" ? result.loggedOut : cleared;
-  if (loggedOut) {
+  // Logout may publish new config; its completed result must not mark a replacement runtime.
+  if (loggedOut && isRuntimeCurrent()) {
     params.context.markChannelLoggedOut(params.channelId, true, resolvedAccountId);
   }
   return {

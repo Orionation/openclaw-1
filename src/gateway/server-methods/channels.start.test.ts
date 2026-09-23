@@ -249,17 +249,28 @@ describe("channelsHandlers channels.logout", () => {
     { changed: "registration", phase: "preparation" },
     { changed: "config", phase: "stop" },
     { changed: "registration", phase: "stop" },
+    { changed: "config", phase: "completion" },
+    { changed: "registration", phase: "completion" },
+    { changed: "reload", phase: "completion" },
+    { changed: "runtime", phase: "completion" },
   ])(
     "preserves the successor when $changed changes during logout $phase",
     async ({ changed, phase }) => {
       const entered = createDeferred();
       const release = createDeferred();
       let pause = false;
+      let reloadSettled = true;
       const waitForReload = async () => {
         entered.resolve();
         await release.promise;
       };
-      const logoutAccount = vi.fn(async () => ({ cleared: true, loggedOut: true }));
+      const logoutAccount = vi.fn(async () => {
+        const result = { cleared: true, loggedOut: true };
+        if (pause && phase === "completion") {
+          await waitForReload();
+        }
+        return result;
+      });
       const plugin = {
         ...createChannelTestPluginBase({
           id: "whatsapp",
@@ -303,7 +314,8 @@ describe("channelsHandlers channels.logout", () => {
       options.context = {
         ...options.context,
         getGatewayMethodRegistry: () => methodRegistry,
-        isConfigReloadSettled: () => true,
+        isConfigReloadSettled: () => reloadSettled,
+        markChannelLoggedOut: vi.fn(manager.markChannelLoggedOut),
         stopChannel: async (channelId, accountId) => {
           await manager.stopChannel(channelId, accountId);
           if (pause && phase === "stop") {
@@ -326,13 +338,15 @@ describe("channelsHandlers channels.logout", () => {
         await manager.stopChannel("whatsapp", "default-account");
         if (changed === "config") {
           mocks.getRuntimeConfig.mockReturnValue({ channels: { whatsapp: { name: "successor" } } });
-        } else {
+        } else if (changed === "registration") {
           const successor = { ...plugin, gateway: { ...plugin.gateway } };
           registry = createTestRegistry([
             { pluginId: "whatsapp", plugin: successor, source: "test" },
           ]);
           methodRegistry = createGatewayMethodRegistry([], registry);
           setActivePluginRegistry(registry);
+        } else if (changed === "reload") {
+          reloadSettled = false;
         }
         await manager.startChannel("whatsapp", "default-account", { manual: true });
         release.resolve();
@@ -341,16 +355,27 @@ describe("channelsHandlers channels.logout", () => {
         expect(
           manager.getRuntimeSnapshot().channelAccounts.whatsapp?.["default-account"]?.running,
         ).toBe(true);
-        expect(logoutAccount).not.toHaveBeenCalled();
-        expect(options.context.markChannelLoggedOut).not.toHaveBeenCalled();
-        expect(options.respond).toHaveBeenCalledWith(
-          false,
-          undefined,
-          expect.objectContaining({
-            code: "UNAVAILABLE",
-            message: expect.stringContaining("changed"),
-          }),
-        );
+        if (changed !== "runtime") {
+          expect(options.context.markChannelLoggedOut).not.toHaveBeenCalled();
+        }
+        if (phase === "completion") {
+          expect(logoutAccount).toHaveBeenCalledOnce();
+          expect(options.respond).toHaveBeenCalledWith(
+            true,
+            expect.objectContaining({ cleared: true, loggedOut: true }),
+            undefined,
+          );
+        } else {
+          expect(logoutAccount).not.toHaveBeenCalled();
+          expect(options.respond).toHaveBeenCalledWith(
+            false,
+            undefined,
+            expect.objectContaining({
+              code: "UNAVAILABLE",
+              message: expect.stringContaining("changed"),
+            }),
+          );
+        }
       } finally {
         pause = false;
         release.resolve();

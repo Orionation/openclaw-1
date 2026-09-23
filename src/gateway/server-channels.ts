@@ -1502,13 +1502,13 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     if (!plugin) {
       return;
     }
-    const cfg = getRuntimeConfig();
     const resolvedId =
-      accountId ??
-      resolveChannelDefaultAccountId({
-        plugin,
-        cfg,
-      });
+      accountId ?? resolveChannelDefaultAccountId({ plugin, cfg: getRuntimeConfig() });
+    const store = getStore(channelId);
+    // A manual start can overtake logout while its credential hook settles.
+    if (store.starting.has(resolvedId) || store.tasks.has(resolvedId)) {
+      return;
+    }
     const current = getRuntime(channelId, resolvedId);
     setStoppedRuntime(channelId, resolvedId, {
       ...(cleared ? { linked: false } : {}),

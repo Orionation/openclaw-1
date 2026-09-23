@@ -3708,6 +3708,7 @@ describe("server-channels auto restart", () => {
     await manager.startChannel("discord");
 
     expect(manager.getRuntimeSnapshot().channelAccounts.discord?.default?.linked).toBe(true);
+    await manager.stopChannel("discord", DEFAULT_ACCOUNT_ID);
     manager.markChannelLoggedOut("discord", true);
     expect(manager.getRuntimeSnapshot().channelAccounts.discord?.default).toMatchObject({
       linked: false,
@@ -3715,8 +3716,6 @@ describe("server-channels auto restart", () => {
       lifecycle: "stopped",
       lastError: "logged out",
     });
-    await manager.stopChannel("discord", DEFAULT_ACCOUNT_ID);
-
     account.enabled = false;
     await manager.startChannel("discord");
     expect(manager.getRuntimeSnapshot().channelAccounts.discord?.default?.linked).toBe(false);
