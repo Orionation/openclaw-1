@@ -26,20 +26,40 @@ describe("doctor retired successor guard", () => {
     expect(warnings.join("\n")).toContain("successor");
   });
 
-  it("still migrates onto a supported successor", async () => {
+  it("migrates a supported successor absent from manifest and configured catalogs", async () => {
     const { cfg, state } = await fixture("oauth");
+    const { loadManifestMetadataSnapshot } =
+      await import("../plugins/manifest-contract-eligibility.js");
+    const metadataSnapshot = loadManifestMetadataSnapshot({ config: cfg, env: state.env });
+    const catalog = metadataSnapshot.plugins.find((plugin) => plugin.id === "openai")?.modelCatalog
+      ?.providers?.openai?.models;
+    expect(catalog?.length).toBeGreaterThan(0);
+    expect(catalog?.some((model) => model.id === "current-model")).toBe(false);
+    expect(cfg.models?.providers?.openai?.models).toEqual([]);
+    cfg.agents!.defaults!.model = {
+      primary: "openai/retired-with-successor",
+      fallbacks: ["openai/retired-with-successor"],
+    };
+    cfg.agents!.defaults!.modelPolicy = { allow: ["openai/retired-with-successor"] };
+    const originalConfig = structuredClone(cfg);
     const warnings: string[] = [];
     const resolve = createRetiredModelRefRepairResolver({
       cfg,
       env: state.env,
+      metadataSnapshot,
       warnings,
     });
-    expect(resolve({ modelRef: "openai/retired-with-successor", agentId: "main" })).toEqual({
-      kind: "replace",
-      modelRef: "openai/current-model",
-      reason: "retirement",
-      retirementScope: "route",
+    const repaired = repairRetiredConfigModelRefs(cfg, resolve, warnings);
+    expect(cfg).toEqual(originalConfig);
+    expect(repaired.config.agents?.defaults?.model).toEqual({
+      primary: "openai/current-model",
+      fallbacks: ["openai/current-model"],
     });
+    expect(repaired.config.agents?.defaults?.modelPolicy?.allow).toEqual([
+      "openai/retired-with-successor",
+      "openai/current-model",
+    ]);
+    expect(warnings).toEqual([]);
   });
 
   it("retains a reference whose successor is route-incompatible", async () => {
