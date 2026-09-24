@@ -24,6 +24,7 @@ import {
 } from "../../../plugins/manifest-contract-eligibility.js";
 import { buildManifestBuiltInModelSuppressionResolver } from "../../../plugins/manifest-model-suppression.js";
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.types.js";
+import { planEffectiveModelCatalogRows } from "../../../model-catalog/index.js";
 import type { ModelRetirementScope } from "./retired-model-ref-repair.types.js";
 import { projectRetiredModelSuccessorConfig } from "./retired-model-ref-settings.js";
 
@@ -171,6 +172,32 @@ export function createRetiredModelRefOwners(params: {
               env,
               metadataSnapshot,
             });
+          },
+          isModelInInstalledCatalog(provider: string, modelId: string): boolean | undefined {
+            // Use the manifest catalog rows to determine authoritative membership.
+            // Returns true when the model is present, false when the provider has
+            // catalog entries but the model is not among them, and undefined when
+            // the provider has no catalog entries (membership cannot be determined).
+            try {
+              const plan = planEffectiveModelCatalogRows({
+                registry: { plugins: metadataSnapshot.plugins },
+                config: params.cfg,
+                providerFilter: provider,
+              });
+              if (plan.rows.length === 0) {
+                // Provider has no catalog entries; cannot determine membership.
+                return undefined;
+              }
+              const normalizedModelId = canonicalizeProviderModelId(provider, modelId);
+              return plan.rows.some(
+                (row) =>
+                  normalizeProviderId(row.provider) === normalizeProviderId(provider) &&
+                  canonicalizeProviderModelId(row.provider, row.id) === normalizedModelId,
+              );
+            } catch {
+              // Catalog resolution failure; do not block migration.
+              return undefined;
+            }
           },
         },
       ];

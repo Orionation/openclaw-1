@@ -22,6 +22,12 @@ export type SuccessorGuardOwner = {
     successorModelRef: string;
     retirementScope: ModelRetirementScope;
   }): OpenClawConfig;
+  /**
+   * Check whether a model is present in the installed plugin model catalog.
+   * Returns `true` when the model is found, `false` when proven absent, and
+   * `undefined` when catalog membership cannot be determined authoritatively.
+   */
+  isModelInInstalledCatalog?(provider: string, modelId: string): boolean | undefined;
 };
 
 // Validates a declared retirement successor against the same owner context
@@ -103,6 +109,17 @@ export function resolveSuccessorModelRepair(params: {
     );
     return params.validatePolicy(params.preserved);
   }
+  // Check installed-catalog membership before migrating (#156155). A successor
+  // that passes auth/route checks can still be absent from the installed catalog,
+  // leaving saved fallback and policy entries pointing at an unusable model.
+  const catalogMembership = owner.isModelInInstalledCatalog?.(provider, successorId);
+  if (catalogMembership === false) {
+    params.warn(
+      `Retained ${canonical} for agent "${agentId}": successor "${provider}/${successor}" is not in the installed model catalog. Choose a supported model explicitly and rerun openclaw doctor --fix.`,
+    );
+    return params.validatePolicy(params.preserved);
+  }
+
   const modelRef = `${provider}/${successor}`;
   return params.validatePolicy({
     kind: "replace",
